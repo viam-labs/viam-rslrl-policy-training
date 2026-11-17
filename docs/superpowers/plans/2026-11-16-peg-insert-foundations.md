@@ -572,7 +572,7 @@ def test_wall_resists_push():
 - [ ] **Step 2: Run it**
 
 Run: `uv run pytest tests/test_peg_hole.py -v`
-Expected: 23 passed, in about a second.
+Expected: 22 passed, in about a second.
 
 If `test_wall_resists_push` fails, `CONTACT_SOLREF` was softened. If a `test_pressed_peg_reaches_floor` case fails on `peak`, the driven rig's servo gains were raised (keep ω·dt ≈ 0.1).
 
@@ -973,7 +973,7 @@ Gate:
 - **Blow-ups on GPU only:**
   - First check `contact_buffer_peak_use`. If it's near 0.9, raise `NCONMAX`/`NJMAX` in the spike. They are per world, so memory is nworld × these.
   - Otherwise compare with `--device cpu` on the same seed. If CUDA diverges from Warp-on-CPU, file it against mujoco_warp with the seed and clearance.
-- **Rate gap over 10 points:** rerun with `--seed 1 --seed 2`. If it persists, raise segments to 48 and retest before going further.
+- **Rate gap over 10 points:** rerun with `--seed 1` and then `--seed 2`. If it persists, raise segments to 48 and retest before going further.
 
 - [ ] **Step 4: Commit**
 
