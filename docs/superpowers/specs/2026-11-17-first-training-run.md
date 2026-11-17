@@ -43,7 +43,13 @@ There are 12 clips of 10 s each, at env steps 0, 2400, …, 26400 (every 100 ite
 
 ## Decisions and next steps
 
-- **Release candidate:** `rl-insert` v1 is the first candidate for the sim-to-sim cell (plan 4). It was trained at 1.0 mm clearance. The 0.2–0.5 mm target fit still needs a tighter-clearance run, either fine-tuned from `checkpoint.pt` or trained from scratch.
+- **Superseded: `rl-insert` v1 can't succeed on the real G2.** Found after the run: the sim's pads ended at the TCP instead of being centred on it, 18.75 mm too high. With the 20 mm protrusion, the real fingertips (176.3 mm from the flange) were level with the peg tip, so they'd land on the fixture about 0.3 mm into the insertion. Fixed in the commit after this write-up:
+  - pads centred on the TCP;
+  - a 60 mm peg held with 40 mm past the TCP, about 20 mm past the fingertips;
+  - a fixture top that covers the pad footprint (r 25.5 mm);
+  - a `gripper_hit` termination when the palm or a finger touches the fixture.
+
+  The next run needs a new image and trains from scratch, because the observation's meaning changed (the protrusion). Printable parts matching the fixed sim are in `hardware/stl/`.
 - **Force:** excess force is the main thing to fix. Options:
   - raise the force penalty;
   - lower `pos_scale_m` near contact;

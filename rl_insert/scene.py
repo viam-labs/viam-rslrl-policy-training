@@ -17,7 +17,7 @@ class SceneParams:
     arm: ArmParams = field(default_factory=ArmParams)
     gripper: GripperParams = field(default_factory=GripperParams)
     hole_pos: tuple[float, float, float] = (0.4, 0.0, 0.0)
-    protrusion: float = 0.02  # how far the peg tip sticks out past the fingertip centre
+    protrusion: float = 0.04  # how far the peg tip sticks out past the pad centre (the TCP)
 
 
 def build_scene(p: SceneParams = SceneParams()) -> mujoco.MjSpec:

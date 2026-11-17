@@ -54,7 +54,7 @@ class TaskParams:
 
     clearance: float = 0.0005  # fixed per run: compiled mesh geometry, see mdp.widen_on_success
     hole_mouth: tuple[float, float, float] = (0.4, 0.0, 0.05)  # nominal, robot base frame
-    protrusion: float = 0.02  # peg tip past the TCP (pad centre)
+    protrusion: float = 0.04  # peg tip past the TCP (pad centre); 20 mm past the G2 fingertips
     start_height: tuple[float, float] = (0.010, 0.020)  # tip above the mouth at reset
     start_lateral: float = 0.003  # +/- m at full difficulty
     hole_bias: tuple[float, float, float] = (0.002, 0.002, 0.001)  # +/- m at full difficulty
@@ -248,6 +248,12 @@ def peg_insert_env_cfg(p: TaskParams = TaskParams(), play: bool = False) -> Mana
                 fields=("found", "force"),
                 reduce="netforce",  # one net wrench, world frame
             ),
+            ContactSensorCfg(  # the real fingers must never land on the fixture
+                name="gripper_hole_contact",
+                primary=ContactMatch(mode="subtree", pattern="gripper", entity="robot"),
+                secondary=ContactMatch(mode="body", pattern="hole", entity="hole"),
+                fields=("found",),
+            ),
         ),
     )
 
@@ -363,6 +369,7 @@ def peg_insert_env_cfg(p: TaskParams = TaskParams(), play: bool = False) -> Mana
             ),
             "peg_slipped": TerminationTermCfg(func=mdp.peg_slipped, params={"max_slip": p.max_slip}),
             "excess_force": TerminationTermCfg(func=mdp.excess_force, params={"threshold": p.force_limit}),
+            "gripper_hit": TerminationTermCfg(func=mdp.gripper_hit),
         },
         curriculum={
             "difficulty": CurriculumTermCfg(

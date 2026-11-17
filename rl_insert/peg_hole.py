@@ -21,12 +21,12 @@ TIMESTEP = 0.001
 @dataclass(frozen=True)
 class PegHoleParams:
     peg_radius: float = 0.005
-    peg_length: float = 0.04
+    peg_length: float = 0.06  # 40 mm out past the TCP, 20 mm held: the G2 fingertips end 19.7 mm past it
     peg_mass: float = 0.02
     clearance: float = 0.0005  # radial gap between peg and bore wall
     chamfer: float = 0.001  # 45 degree chamfer leg at the mouth
     depth: float = 0.02
-    wall: float = 0.01  # radial wall thickness
+    wall: float = 0.02  # radial wall thickness: the fixture top covers the pad footprint (r <= 18.4 mm)
     segments: int = 32  # sides of the polygonal bore and peg
     friction: float = 0.5
 

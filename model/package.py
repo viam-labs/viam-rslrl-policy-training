@@ -19,12 +19,13 @@ SCHEMA_VERSION = 1
 
 # model_metrics.json name -> tensorboard scalar tag. mjlab logs Episode_Termination/<k> as the number
 # of envs that ended for reason k per reset (count_nonzero), averaged by rsl_rl over the iteration,
-# so build_metrics turns those into rates: each count over the sum of all four at that iteration.
+# so build_metrics turns those into rates: each count over the sum of all of them at that iteration.
 METRIC_TAGS = {
     "success_rate": "Episode_Termination/success",
     "slip_rate": "Episode_Termination/peg_slipped",
     "excess_force_rate": "Episode_Termination/excess_force",
     "timeout_rate": "Episode_Termination/time_out",
+    "gripper_hit_rate": "Episode_Termination/gripper_hit",
     "mean_reward": "Train/mean_reward",
     "mean_episode_length": "Train/mean_episode_length",
     "curriculum_difficulty": "Curriculum/difficulty",

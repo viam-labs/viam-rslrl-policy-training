@@ -288,6 +288,11 @@ def excess_force(env: ManagerBasedRlEnv, threshold: float) -> torch.Tensor:
     return peg_hole_force(env).norm(dim=-1) > threshold
 
 
+def gripper_hit(env: ManagerBasedRlEnv, sensor_name: str = "gripper_hole_contact") -> torch.Tensor:
+    """Palm or a finger touched the fixture."""
+    return (env.scene[sensor_name].data.found > 0).any(dim=-1)
+
+
 # Curriculum.
 
 

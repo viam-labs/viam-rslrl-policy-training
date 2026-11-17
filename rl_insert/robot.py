@@ -70,7 +70,7 @@ def add_gripper(spec: mujoco.MjSpec, g: GripperParams = GripperParams()) -> mujo
         finger.add_joint(name=f"finger_{side}", type=mujoco.mjtJoint.mjJNT_SLIDE, axis=[0, sign, 0],
                          range=[0, half])
         finger.add_geom(name=f"pad_{side}", type=mujoco.mjtGeom.mjGEOM_BOX, size=[g.pad_width / 2, 0.003, g.finger_length / 2],
-                        pos=[0, sign * 0.003, g.finger_length / 2], mass=0.05,
+                        pos=[0, sign * 0.003, g.finger_length], mass=0.05,  # centred on the TCP
                         friction=[g.pad_friction, 0.005, 0.0001], solref=[0.002, 1.0], group=HIDDEN)
         _add_visual_mesh(spec, finger, f"g2_finger_{side}", to_flange)
     spec.add_equality(type=mujoco.mjtEq.mjEQ_JOINT, name1="finger_left", name2="finger_right",
