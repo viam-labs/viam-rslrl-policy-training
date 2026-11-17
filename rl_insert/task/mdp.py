@@ -55,6 +55,8 @@ class InsertState:
         n, dev = env.num_envs, env.device
         self.hole_bias = torch.zeros(n, 3, device=dev)
         self.difficulty = p["difficulty_init"]  # scales lateral start offset and hole bias, 0..1
+        self.succ = torch.zeros((), device=dev)  # successes among resets in the current curriculum window
+        self.done = 0  # resets in the current window
         robot = env.scene["robot"]
         self.tcp_gid = int(robot.indexing.site_ids[robot.find_sites("tcp")[0][0]])
         self.flip = FLIP.to(dev)
@@ -293,14 +295,21 @@ def widen_on_success(env: ManagerBasedRlEnv, env_ids, up: float, down: float, st
     """Widen the start offset and hole bias (difficulty 0..1) when resetting envs mostly succeed.
 
     Runs at the start of every reset on the envs about to reset, while the termination manager
-    still holds why they ended. Clearance can't be in this loop: it is compiled mesh geometry, so
-    it is fixed per run (TaskParams.clearance).
+    still holds why they ended. Outcomes accumulate over a window of num_envs resets (about one
+    episode per env, spread out because run_train uses init_at_random_ep_len=True); then difficulty
+    moves by at most one `step` and the window restarts. One .item() per window. Clearance can't be
+    in this loop: it is compiled mesh geometry, so it is fixed per run (TaskParams.clearance).
     """
     s = state(env)
     if isinstance(env_ids, torch.Tensor) and len(env_ids) > 0 and env.common_step_counter > 0:
-        rate = env.termination_manager.get_term("success")[env_ids].float().mean().item()
-        if rate > up:
-            s.difficulty = min(1.0, s.difficulty + step)
-        elif rate < down:
-            s.difficulty = max(s.p["difficulty_init"], s.difficulty - step)
-    return torch.tensor(s.difficulty)
+        s.succ += env.termination_manager.get_term("success")[env_ids].float().sum()
+        s.done += len(env_ids)
+        if s.done >= env.num_envs:
+            rate = s.succ.item() / s.done
+            if rate > up:
+                s.difficulty = min(1.0, s.difficulty + step)
+            elif rate < down:
+                s.difficulty = max(s.p["difficulty_init"], s.difficulty - step)
+            s.succ.zero_()
+            s.done = 0
+    return torch.tensor(s.difficulty, device=env.device)
