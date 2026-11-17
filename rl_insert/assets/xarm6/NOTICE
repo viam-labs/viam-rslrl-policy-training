@@ -1,3 +1,6 @@
 xarm6.urdf and meshes/*.stl are copied from viam-ufactory-xarm (https://github.com/viam-modules/viam-ufactory-xarm),
 Apache License 2.0. Changes: mesh paths reduced to file names and a <mujoco> compiler block added, and link6
 given its mesh (upstream leaves link6.stl unreferenced).
+
+xarm6_kinematics.json is copied unchanged from viam-ufactory-xarm (arm/xarm6_kinematics.json, commit 73551ea),
+Apache License 2.0: the kinematics the real arm module serves, used by the mujoco-sim cell.
