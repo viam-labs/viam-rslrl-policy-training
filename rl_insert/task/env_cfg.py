@@ -190,6 +190,7 @@ def _add_grasp_weld(spec: mujoco.MjSpec, timeconst: float) -> None:
     Measured on CPU Warp (64 envs): timeconst 0.002 s gives settle 0.14 mm / creep 0.07 mm over
     2 s, and 20 N moves the peg in the hand ~0.2 mm axially / ~0.5 mm laterally (max 0.7 / 1.2).
     0.005 s: settle 0.4, creep 0.28, lateral 20 N up to 2.5 mm; 0.01 s fails the 0.5 mm gates.
+    (Those numbers predate mdp.GRASP_TORQUESCALE; below 0.002 s MuJoCo clamps to 2x the timestep.)
     """
     spec.add_equality(
         type=mujoco.mjtEq.mjEQ_WELD,
@@ -198,7 +199,7 @@ def _add_grasp_weld(spec: mujoco.MjSpec, timeconst: float) -> None:
         name1="robot/gripper",
         name2="peg/peg",
         solref=[timeconst, 1.0],
-        data=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        data=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, mdp.GRASP_TORQUESCALE, 0.0],
     )
 
 

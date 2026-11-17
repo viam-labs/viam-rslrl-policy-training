@@ -25,6 +25,10 @@ if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
 
 GRASP_WELD = "grasp"  # the peg-to-gripper weld equality added by env_cfg._add_grasp_weld
+# Weld weight on rotation vs translation. At 1 the 20 g peg's tiny inertia leaves the weld soft in
+# rotation: pad torque about the TCP swung the tip (40 mm out) p95 7 mm, max 10, under random
+# actions on CPU, 64 envs. At 10: p95 0.23 mm, max 0.6 (100 gives the same).
+GRASP_TORQUESCALE = 10.0
 FLIP = torch.diag(torch.tensor([1.0, -1.0, -1.0]))  # peg +z points back toward the gripper
 
 
@@ -54,6 +58,7 @@ class InsertState:
         self.p = p
         n, dev = env.num_envs, env.device
         self.hole_bias = torch.zeros(n, 3, device=dev)
+        self.grasp_tip = torch.zeros(n, 3, device=dev)  # sampled tip in the TCP frame (the weld target)
         self.difficulty = p["difficulty_init"]  # scales lateral start offset and hole bias, 0..1
         self.succ = torch.zeros((), device=dev)  # successes among resets in the current curriculum window
         self.done = 0  # resets in the current window
@@ -144,7 +149,8 @@ class ResetPegInHand:
         )
         tilt = _rot_y(_uniform(n, -p["grasp_tilt"], p["grasp_tilt"], dev))
         along = tilt @ torch.tensor([0.0, 0.0, p["protrusion"]], device=dev)
-        tip = pos + (rot @ (offset + along).unsqueeze(-1)).squeeze(-1)
+        s.grasp_tip[env_ids] = offset + along
+        tip = pos + (rot @ s.grasp_tip[env_ids].unsqueeze(-1)).squeeze(-1)
         peg_quat = quat_from_matrix(rot @ tilt @ s.flip)
         peg_state = torch.cat([tip, peg_quat, torch.zeros(n, 6, device=dev)], dim=-1)
         env.scene["peg"].write_root_state_to_sim(peg_state, env_ids=env_ids)
@@ -158,7 +164,7 @@ class ResetPegInHand:
         in_peg = (peg_rot.transpose(-1, -2) @ (pos - tip).unsqueeze(-1)).squeeze(-1)
         in_grip = (g_rot.transpose(-1, -2) @ (pos - g_pos).unsqueeze(-1)).squeeze(-1)
         rel = quat_mul(quat_conjugate(g_quat), peg_quat)
-        tail = torch.tensor([1.0, 0.0], device=dev).expand(n, 2)
+        tail = torch.tensor([GRASP_TORQUESCALE, 0.0], device=dev).expand(n, 2)
         env.sim.model.eq_data[env_ids, s.weld_id] = torch.cat([in_peg, in_grip, rel, tail], dim=-1)
 
         lat = p["start_lateral"] * s.difficulty
@@ -280,8 +286,14 @@ def force_over(env: ManagerBasedRlEnv, threshold: float) -> torch.Tensor:
 
 
 def peg_slipped(env: ManagerBasedRlEnv, max_slip: float) -> torch.Tensor:
-    """Peg tip moved more than max_slip from where the nominal grasp says it is (or fell)."""
-    return (true_tip(env) - nominal_tip(env)).norm(dim=-1) > max_slip
+    """Peg tip moved more than max_slip from where this episode's grasp put it (or fell).
+
+    Against the sampled grasp, not the nominal one: the grasp randomisation alone puts the tip up
+    to ~6 mm off nominal, which used to eat most of the budget.
+    """
+    pos, rot = tcp_pose(env)
+    tip = pos + (rot @ state(env).grasp_tip.unsqueeze(-1)).squeeze(-1)
+    return (true_tip(env) - tip).norm(dim=-1) > max_slip
 
 
 def excess_force(env: ManagerBasedRlEnv, threshold: float) -> torch.Tensor:
