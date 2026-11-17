@@ -776,6 +776,8 @@ class JointVelFiniteDiff:
     velocity), unlike qvel.
 
     Keyed on env.common_step_counter, so extra compute() calls within a step change nothing.
+    Envs on their first step restart the difference from the current joints, which also covers a
+    manual env.reset() (it doesn't advance the counter).
     """
 
     def __init__(self, cfg, env: ManagerBasedRlEnv):
@@ -783,12 +785,14 @@ class JointVelFiniteDiff:
         self.step = -1
 
     def __call__(self, env: ManagerBasedRlEnv, asset_cfg) -> torch.Tensor:
+        q = env.scene[asset_cfg.name].data.joint_pos[:, asset_cfg.joint_ids]
         if env.common_step_counter != self.step:
             self.step = env.common_step_counter
-            q = env.scene[asset_cfg.name].data.joint_pos[:, asset_cfg.joint_ids].clone()
-            self.prev, self.cur = (q if self.cur is None else self.cur), q
-        vel = (self.cur - self.prev) / env.step_dt
-        return vel * (env.episode_length_buf > 0).unsqueeze(-1)
+            self.prev, self.cur = (q.clone() if self.cur is None else self.cur), q.clone()
+        fresh = env.episode_length_buf == 0
+        self.cur[fresh] = q[fresh]
+        self.prev[fresh] = q[fresh]  # so the first step reads 0
+        return (self.cur - self.prev) / env.step_dt
 
 
 def hole_pos(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -1464,8 +1468,8 @@ def build_metrics(event_dir: Path) -> dict[str, list[float]]:
     for name, tag in METRIC_TAGS.items():
         if tag in series:
             points = sorted(series[tag].items())
-            if tag.startswith("Episode_Termination/"):  # count -> rate
-                values = [v / total[step] if total[step] > 0 else 0.0 for step, v in points]
+            if tag.startswith("Episode_Termination/"):  # count -> rate; skip iterations where none ended
+                values = [v / total[step] for step, v in points if total[step] > 0]
             else:
                 values = [v for _, v in points]
             stride = max(1, -(-len(values) // MAX_METRIC_POINTS))
@@ -2170,13 +2174,13 @@ viam train submit custom from-registry --org-id=16518049-9dd3-479f-9644-c5d112aa
   --dataset-id=6581c38d39e1f5ebd5bc0e0f --model-name=rl-insert-smoke --model-version=1 \
   --script-name=16518049-9dd3-479f-9644-c5d112aa42d8:rl-insert-train --version=1 \
   --container-id=<container-id> \
-  --args=clearance_mm=1.0,num_envs=4096,max_iterations=3,video_every_iters=1,video_length=40,upload_part_id=cab989eb-90a0-4dce-8fc6-2c50d0ed1f10,run_name=smoke-1
+  --args=clearance_mm=1.0,num_envs=4096,max_iterations=3,video_every_iters=1,video_length=20,upload_part_id=cab989eb-90a0-4dce-8fc6-2c50d0ed1f10,run_name=smoke-1
 ```
 
 Expected:
 - the job completes;
 - `viam packages export --name=rl-insert-smoke ...` gives `policy.onnx`, `config.json`, `checkpoint.pt` and `model_metrics.json` (possibly `{}`);
-- about 3 clips tagged `smoke-1` appear in Viam Data.
+- 2–3 clips tagged `smoke-1` appear in Viam Data.
 
 From `viam train logs`, read the seconds per PPO iteration, which rsl_rl logs every iteration. Pick Task 8's `max_iterations` so the job runs about 2–4 hours.
 
