@@ -9,7 +9,6 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 COPY rl_insert rl_insert
-COPY assets assets
 COPY spikes spikes
 
 CMD ["python", "spikes/contact_warp.py", "--device", "cuda"]

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import mujoco
 
-ASSETS = Path(__file__).resolve().parent.parent / "assets"
+ASSETS = Path(__file__).resolve().parent / "assets"  # inside the package so pip installs it
 XARM6_URDF = ASSETS / "xarm6" / "xarm6.urdf"
 ARM_JOINTS = tuple(f"joint{i}" for i in range(1, 7))
 FLANGE = "link_eef"

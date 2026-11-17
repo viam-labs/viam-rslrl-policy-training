@@ -1,15 +1,22 @@
 [project]
 name = "viam-rl-insert"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.12,<3.14"
-dependencies = ["mujoco-warp~=4.0.1", "numpy>=1.26"]
+dependencies = [
+    "mjlab[cpu] @ git+https://github.com/mujocolab/mjlab@6ab9846ea068714678fd0e9f791f898c6b697b20",
+    "viam-sdk>=0.85",
+    "onnxruntime>=1.20",
+]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
-packages = ["rl_insert"]
+packages = ["rl_insert", "model"]
 
 [dependency-groups]
 dev = ["pytest>=8"]
