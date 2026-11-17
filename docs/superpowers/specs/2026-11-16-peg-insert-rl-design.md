@@ -104,8 +104,12 @@ collision-detection trip level. The policy learns to stay under it, and the real
 - observation noise,
 - grasp offset.
 
-**Geometry:** the peg is a cylinder; the hole is a chamfered ring of 24–32 boxes, generated from
-diameter, clearance, chamfer and depth.
+**Geometry:** generated from diameter, clearance, chamfer and depth. Settled by prototyping (see the
+foundations plan):
+- The peg is a convex 32-sided mesh, not a cylinder primitive.
+- The hole is a ring of convex prism meshes (wall plus chamfer pieces) that tile exactly, not
+  overlapping boxes.
+- Peg, hole and pad contacts use `solref=[0.002, 1]` at a 1 ms timestep.
 
 ## Deploy controller
 
@@ -166,8 +170,9 @@ error, too many overruns, or `stop`.
 1. **Docker probe on the cloud sim machine:**
    - `nvidia-smi`, then `docker run --gpus all`, then a mujoco_warp smoke test in the container.
    - Fallback: the same pinned deps in a `uv` venv on the host.
-2. **Contact spike:** a peg at 0.2 mm clearance in the box-ring hole under MuJoCo Warp. Check for
-   no wall penetration and no false jamming, and confirm Warp supports cylinder–box collisions.
+2. **Contact spike:** an arm-driven peg pressed into the mesh hole at 1.0, 0.5 and 0.2 mm
+   clearance, batched on MuJoCo Warp and compared with CPU MuJoCo. Pass: no blow-ups, insertion
+   rates within 10 points, contact buffer under 90% full.
 3. **xArm6 model:** URDF → MJCF/URDF usable by both mjlab and viam-mujoco-sim; gripper model match.
 
 ## Testing

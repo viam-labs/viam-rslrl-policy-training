@@ -14,6 +14,11 @@ CPU MuJoCo tests pin down geometry and contact behaviour. `spikes/contact_warp.p
 
 **Spec:** `docs/superpowers/specs/2026-11-16-peg-insert-rl-design.md`. This is plan 1 of 4: foundations and spikes. The later plans are the training task and container, the controller module, and the sim-to-sim cell.
 
+**Deferred from spec spike 3 (xArm6 model):**
+- Loading this model in mjlab happens in plan 2 (training).
+- Loading it in viam-mujoco-sim happens in plan 4 (sim-to-sim).
+- The gripper values in `GripperParams` are placeholders until the real gripper's TCP offset, stroke and grip force are measured. This must happen before plan 2's training runs that matter.
+
 ---
 
 ## What prototyping already established
@@ -74,15 +79,21 @@ version = "0.1.0"
 requires-python = ">=3.12,<3.14"
 dependencies = ["mujoco-warp~=4.0.1", "numpy>=1.26"]
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["rl_insert"]
+
 [dependency-groups]
 dev = ["pytest>=8"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
 ```
 
-`pythonpath = ["."]` lets tests and spikes import `rl_insert` without a build backend.
+The hatchling build backend makes `uv sync` install `rl_insert` (editable), so tests and `uv run python spikes/...` can import it.
 
 - [ ] **Step 2: Write `.gitignore`**
 
@@ -551,7 +562,7 @@ def test_wall_resists_push():
 - [ ] **Step 2: Run it**
 
 Run: `uv run pytest tests/test_peg_hole.py -v`
-Expected: 22 passed, in about a second.
+Expected: 23 passed, in about a second.
 
 If `test_wall_resists_push` fails, `CONTACT_SOLREF` was softened. If a `test_pressed_peg_reaches_floor` case fails on `peak`, the driven rig's servo gains were raised (keep ω·dt ≈ 0.1).
 
@@ -694,7 +705,8 @@ Presses N pegs into the hole from random offsets, directions and tilts (the arm-
 rl_insert.peg_hole), on Warp, and the first K of them on CPU MuJoCo. Prints a JSON report and
 exits 1 if the gate fails:
   - no world blows up (non-finite, left the fixture, sank through, bounced up),
-  - over the K reference worlds, Warp's insertion rate is within 10 points of CPU MuJoCo's.
+  - over the K reference worlds, Warp's insertion rate is within 10 points of CPU MuJoCo's,
+  - the contact buffer never passes 90% full (a full one drops contacts silently).
 Per-world agreement is reported too, but not gated: pegs balanced on the rim go either way
 (float32 vs float64), and RL only sees the statistics.
 
@@ -720,6 +732,8 @@ from rl_insert.peg_hole import PegHoleParams, driven_peg_scene
 SPEED = 0.04  # m/s, the policy's top speed: 2 mm per 50 ms step
 SECONDS = 3.0
 CTRL_EVERY = 10  # steps between ctrl updates (0.4 mm of ramp), to keep host-device copies rare
+NCONMAX = 128  # contacts per world; one wedged peg peaked at 94
+NJMAX = 1024  # constraint rows per world
 
 
 def initial_states(p: PegHoleParams, n: int, rng: np.random.Generator) -> np.ndarray:
@@ -753,10 +767,13 @@ def run_cpu(m: mujoco.MjModel, q0: np.ndarray) -> np.ndarray:
     return d.qpos[:3].copy()
 
 
-def run_warp(m: mujoco.MjModel, q0: np.ndarray) -> tuple[np.ndarray, float]:
+def run_warp(m: mujoco.MjModel, q0: np.ndarray) -> tuple[np.ndarray, float, float]:
+    """Final tips, world-steps per second, and peak contact-buffer use (fraction of capacity)."""
     n = len(q0)
     mw = mjw.put_model(m)
-    dw = mjw.put_data(m, mujoco.MjData(m), nworld=n, nconmax=64 * n, njmax=256 * n)
+    # nconmax and njmax are per world; the total contact buffer is nconmax * nworld
+    dw = mjw.put_data(m, mujoco.MjData(m), nworld=n, nconmax=NCONMAX, njmax=NJMAX)
+    peak_contacts = 0
     dw.qpos = wp.array(q0.astype(np.float32), dtype=float)
     ctrl = q0.astype(np.float32).copy()
     steps = int(SECONDS / m.opt.timestep)
@@ -765,10 +782,11 @@ def run_warp(m: mujoco.MjModel, q0: np.ndarray) -> tuple[np.ndarray, float]:
         if i % CTRL_EVERY == 0:
             ctrl[:, 2] = target_z(i, m.opt.timestep)
             dw.ctrl = wp.array(ctrl, dtype=float)
+            peak_contacts = max(peak_contacts, int(dw.nacon.numpy()[0]))
         mjw.step(mw, dw)
     wp.synchronize()
     elapsed = time.perf_counter() - start
-    return dw.qpos.numpy()[:, :3], n * steps / elapsed
+    return dw.qpos.numpy()[:, :3], n * steps / elapsed, peak_contacts / (NCONMAX * n)
 
 
 def main() -> int:
@@ -787,7 +805,7 @@ def main() -> int:
         p = PegHoleParams(clearance=c)
         m = driven_peg_scene(p).compile()
         q0 = initial_states(p, args.nworld, rng)
-        tips, rate = run_warp(m, q0)
+        tips, rate, buffer_use = run_warp(m, q0)
         warp_outcomes = [classify(p, t) for t in tips]
         k = min(args.reference, args.nworld)
         cpu_outcomes = [classify(p, run_cpu(m, q0[i])) for i in range(k)]
@@ -795,10 +813,12 @@ def main() -> int:
         warp_rate = warp_outcomes[:k].count("inserted") / k
         cpu_rate = cpu_outcomes.count("inserted") / k
         counts = {o: warp_outcomes.count(o) for o in ("inserted", "not_inserted", "blew_up")}
-        passed = counts["blew_up"] == 0 and abs(warp_rate - cpu_rate) <= 0.1
+        # a full contact buffer drops contacts silently, which looks like penetration
+        passed = counts["blew_up"] == 0 and abs(warp_rate - cpu_rate) <= 0.1 and buffer_use < 0.9
         ok &= passed
         report["results"].append({"clearance_mm": c * 1e3, "warp": counts, "insert_rate_warp": round(warp_rate, 3),
                                   "insert_rate_cpu": round(cpu_rate, 3), "per_world_agreement": round(agree, 3),
+                                  "contact_buffer_peak_use": round(buffer_use, 3),
                                   "world_steps_per_s": round(rate), "passed": passed})
     report["passed"] = ok
     print(json.dumps(report, indent=2))
@@ -856,8 +876,9 @@ CMD ["python", "spikes/contact_warp.py", "--device", "cuda"]
 ```bash
 #!/usr/bin/env bash
 # Run on the cloud sim machine (L40S): can it build and run the training container on its GPU?
-# Prints PASS/FAIL per step; stops at the first failure.
+# Prints each step; stops at the first failure and prints FAIL.
 set -euo pipefail
+trap 'echo "FAIL"' ERR
 cd "$(dirname "$0")/.."
 IMAGE=rl-insert:probe
 
@@ -939,8 +960,10 @@ Include:
 
 Gate:
 - **Pass** (no blow-ups, rates within 10 points at all clearances): proceed to plan 2.
-- **Blow-ups on GPU only:** compare against `--device cpu` on the same seed. If CUDA diverges from Warp-on-CPU, file it against mujoco_warp with the seed and clearance; try `nconmax`/`njmax` ×4 first in case of buffer overflow (the spike doesn't check `nacon` against capacity).
-- **Rate gap over 10 points:** rerun with `--seed 1` and then `--seed 2`. If it persists, raise segments to 48 and retest before going further.
+- **Blow-ups on GPU only:**
+  - First check `contact_buffer_peak_use`. If it's near 0.9, raise `NCONMAX`/`NJMAX` in the spike. They are per world, so memory is nworld × these.
+  - Otherwise compare with `--device cpu` on the same seed. If CUDA diverges from Warp-on-CPU, file it against mujoco_warp with the seed and clearance.
+- **Rate gap over 10 points:** rerun with `--seed 1 --seed 2`. If it persists, raise segments to 48 and retest before going further.
 
 - [ ] **Step 4: Commit**
 
