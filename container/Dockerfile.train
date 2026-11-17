@@ -55,3 +55,9 @@ RUN pip install --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}" "to
         "mjlab @ https://github.com/mujocolab/mjlab/archive/${MJLAB_REF}.tar.gz" \
         "viam-sdk>=0.85" onnxruntime tensorboard \
     && python3 -c "import torch, mjlab, mujoco_warp, onnxruntime, viam; print('torch', torch.__version__, torch.version.cuda)"
+
+# Viam's launcher pip-installs the script sdist (setup.py, no pyproject.toml). With build isolation pip
+# would fetch setuptools from PyPI first, so a PyPI hiccup could fail a billed job. Build with the
+# venv's own setuptools instead. PIP_NO_BUILD_ISOLATION is inverted: 0 turns isolation off.
+RUN pip install "setuptools>=70" wheel
+ENV PIP_NO_BUILD_ISOLATION=0
