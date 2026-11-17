@@ -7,6 +7,6 @@ setup(
     name="rl-insert-train",
     version="0.1.0",
     packages=find_packages(include=["model", "rl_insert", "rl_insert.*"]),
-    package_data={"rl_insert": ["assets/xarm6/*.urdf", "assets/xarm6/NOTICE", "assets/xarm6/meshes/*.stl"]},
+    package_data={"rl_insert": ["assets/**/*"]},  # every asset; listing folders dropped assets/g2 once
     install_requires=[],
 )
