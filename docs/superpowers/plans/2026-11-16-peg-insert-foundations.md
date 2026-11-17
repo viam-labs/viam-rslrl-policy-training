@@ -17,7 +17,11 @@ CPU MuJoCo tests pin down geometry and contact behaviour. `spikes/contact_warp.p
 **Deferred from spec spike 3 (xArm6 model):**
 - Loading this model in mjlab happens in plan 2 (training).
 - Loading it in viam-mujoco-sim happens in plan 4 (sim-to-sim).
-- The gripper values in `GripperParams` are placeholders until the real gripper's TCP offset, stroke and grip force are measured. This must happen before plan 2's training runs that matter.
+- `GripperParams` is the UFactory Gripper G2 (AG1200), measured from its STEP file:
+  - 156.6 mm from the mount face to the pad centre (+5 mm if the flange seats on the locating spigot; confirm on the real arm);
+  - 37.5 × 29.5 mm pads;
+  - 84 mm stroke;
+  - 10–50 N grip force (30 N default; plan 2 randomises it).
 
 ---
 
@@ -221,11 +225,17 @@ class ArmParams:
 
 @dataclass(frozen=True)
 class GripperParams:
-    # ponytail: placeholders for UFactory's xArm Gripper; measure yours (TCP and force matter most)
-    tcp: float = 0.172  # flange to the fingertip centre, along the flange z axis
-    finger_length: float = 0.04
-    max_opening: float = 0.085  # full stroke, both fingers
-    grip_force: float = 30.0  # N per finger at full close command
+    """UFactory xArm Gripper G2 (AG1200), measured from its STEP file.
+
+    Mount face (flange contact) to pad centre is 156.6 mm; the fingertips end 176.3 mm out.
+    ponytail: if the flange seats on the 5 mm locating spigot instead, add 5 mm to tcp.
+    """
+    tcp: float = 0.1566  # flange to the pad centre, along the flange z axis
+    finger_length: float = 0.0375  # pad length along the gripper axis
+    pad_width: float = 0.0295
+    max_opening: float = 0.084  # full stroke, both fingers (84 +/- 1 mm)
+    # ponytail: spec range is 10-50 N; plan 2 randomises within it
+    grip_force: float = 30.0
     pad_friction: float = 1.0
 
 
@@ -254,7 +264,7 @@ def add_gripper(spec: mujoco.MjSpec, g: GripperParams = GripperParams()) -> mujo
         finger = root.add_body(name=f"finger_{side}")
         finger.add_joint(name=f"finger_{side}", type=mujoco.mjtJoint.mjJNT_SLIDE, axis=[0, sign, 0],
                          range=[0, half])
-        finger.add_geom(name=f"pad_{side}", type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.01, 0.003, g.finger_length / 2],
+        finger.add_geom(name=f"pad_{side}", type=mujoco.mjtGeom.mjGEOM_BOX, size=[g.pad_width / 2, 0.003, g.finger_length / 2],
                         pos=[0, sign * 0.003, g.finger_length / 2], mass=0.05,
                         friction=[g.pad_friction, 0.005, 0.0001], solref=[0.002, 1.0])
     spec.add_equality(type=mujoco.mjtEq.mjEQ_JOINT, name1="finger_left", name2="finger_right",
