@@ -1,2 +1,3 @@
 xarm6.urdf and meshes/*.stl are copied from viam-ufactory-xarm (https://github.com/viam-modules/viam-ufactory-xarm),
-Apache License 2.0. Changes: mesh paths reduced to file names and a <mujoco> compiler block added.
+Apache License 2.0. Changes: mesh paths reduced to file names and a <mujoco> compiler block added, and link6
+given its mesh (upstream leaves link6.stl unreferenced).

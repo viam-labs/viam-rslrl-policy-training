@@ -59,6 +59,12 @@ def add_gripper(spec: mujoco.MjSpec, g: GripperParams = GripperParams()) -> mujo
     root.add_site(name="tcp", pos=[0, 0, g.finger_length], size=[0.002] * 3)
     root.add_geom(name="gripper_palm", type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.02, 0.05, 0.005],
                   pos=[0, 0, -0.005], mass=0.5)
+    # Display only: the G2 body between the flange and the palm. The pads stop > 50 mm short of it
+    # at full insertion, so it never touches the hole, and the palm's mass already stands in for it.
+    # ponytail: 60 x 90 mm box, roughly the STEP outline; swap for the STEP mesh if looks matter
+    housing = g.tcp - g.finger_length - 0.01
+    root.add_geom(name="gripper_housing", type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.03, 0.045, housing / 2],
+                  pos=[0, 0, -0.01 - housing / 2], contype=0, conaffinity=0, mass=0)
     half = g.max_opening / 2
     for side, sign in (("left", 1.0), ("right", -1.0)):
         finger = root.add_body(name=f"finger_{side}", gravcomp=1.0)
