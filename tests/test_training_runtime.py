@@ -80,3 +80,24 @@ def test_package_written_before_final_sweep_even_if_upload_hangs(monkeypatch, tm
     assert names.index("package") < names.index("upload")
     assert not events[0][1].startswith(str(out))  # logs are written locally, not under out/
     assert (out / "tmp" / "logs" / args.run_name / "videos" / "train" / "rl-video-step-0.mp4").exists()
+
+
+def test_inflight_upload_not_repeated_by_final_sweep(monkeypatch, tmp_path):
+    (tmp_path / "rl-video-step-0.mp4").write_bytes(b"x")
+    args = training.parse_args(["--model_output_directory=o"])
+    up = training.VideoUploader(tmp_path, 24, args, poll_s=0.01)
+    calls = []
+
+    def slow(p, *a):
+        calls.append(Path(p).name)
+        time.sleep(0.5)
+        return "id"
+
+    monkeypatch.setattr(viam_upload, "upload_video", slow)
+    up.start()
+    time.sleep(0.2)  # thread is now mid-upload
+    up.stop.set()
+    up.join(timeout=0.05)
+    assert up.is_alive()
+    up.sweep(final=True)
+    assert calls == ["rl-video-step-0.mp4"]

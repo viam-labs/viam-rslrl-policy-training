@@ -149,6 +149,7 @@ class VideoUploader(threading.Thread):
         super().__init__(daemon=True)
         self.folder, self.steps_per_iter, self.args, self.poll_s = folder, steps_per_iter, args, poll_s
         self.stop = threading.Event()
+        self.lock = threading.Lock()  # one sweep at a time: the final sweep waits for an in-flight one
         self.sizes: dict[Path, int] = {}
         self.done: dict[str, str | None] = {}  # file name -> uploaded file id (None: skipped/failed)
 
@@ -159,11 +160,12 @@ class VideoUploader(threading.Thread):
     def sweep(self, final: bool) -> None:
         from rl_insert.task.viam_upload import upload_video
 
-        for f in sorted(self.folder.glob("*.mp4")):
-            try:
-                self._handle(f, final, upload_video)
-            except Exception:
-                logger.error("video sweep failed for %s:\n%s", f.name, traceback.format_exc())
+        with self.lock:
+            for f in sorted(self.folder.glob("*.mp4")):
+                try:
+                    self._handle(f, final, upload_video)
+                except Exception:
+                    logger.error("video sweep failed for %s:\n%s", f.name, traceback.format_exc())
 
     def _handle(self, f: Path, final: bool, upload_video) -> None:
         if f.name in self.done:
@@ -251,7 +253,10 @@ def train(args: argparse.Namespace, gl: dict) -> None:
         if video:
             uploader.join(timeout=UPLOAD_JOIN_TIMEOUT)
             uploader.sweep(final=True)
-        shutil.copytree(log_dir.parent, out / "tmp" / "logs", dirs_exist_ok=True)
+        try:
+            shutil.copytree(log_dir.parent, out / "tmp" / "logs", dirs_exist_ok=True)
+        except Exception:  # don't mask an exception from run_train
+            logger.error("copying logs to %s failed:\n%s", out, traceback.format_exc())
         logger.info("videos: %s", uploader.done)
 
 
