@@ -66,7 +66,14 @@ Findings to keep:
 8. **The image needs git:** rsl_rl imports GitPython, which needs the binary.
 9. **EGL can be software:** EGL can "work" through Mesa llvmpipe. The probe records the GL renderer string so a CPU renderer is visible.
 10. **Driver version:** warp 1.18+ wheels are CUDA 13 builds and need driver ≥ 580. The documented fallback (torch cu126 with warp 1.17.0) is untested; the probe job decides.
-11. **The weld makes insertion harder.** With the friction grasp, a sloppy peg slid into place. A scripted descent now gets only 2–3 of 8 envs in at 0.5 mm clearance, which is the realistic case for a stiff G2 and xArm. The first job therefore uses 1.0 mm.
+11. **Reward scale:** mjlab scales rewards by dt. The success bonus (800, so 40 after dt) is set to twice the most that hovering below success depth can earn (0.2 per step / (1 − γ) = 20), or PPO would stall just short of success.
+12. **Sim-to-real terms:**
+    - `joint_vel` is a finite difference of measured joints at the policy rate (0 on the first step), as the deploy side computes it.
+    - The start pose is randomized (±0.02 rad per joint).
+    - Each episode samples an action latency of 0–2 policy steps, and the arm's PD gains vary ±20%.
+    - config.json lists what isn't modelled.
+13. **Termination metrics are counts:** `Episode_Termination/*` holds counts per reset batch, so `model_metrics.json` turns them into rates.
+14. **The weld makes insertion harder.** With the friction grasp, a sloppy peg slid into place. A scripted descent now gets only 2–3 of 8 envs in at 0.5 mm clearance, which is the realistic case for a stiff G2 and xArm. The first job therefore uses 1.0 mm.
 
 ## File map
 
@@ -82,7 +89,7 @@ Findings to keep:
 | `rl_insert/task/viam_upload.py` | Upload one file to Viam Data with the job's API key |
 | `model/training.py` | Viam entry point: args, GL selection, train and probe modes, video uploader |
 | `model/package.py` | Writes `config.json` and `model_metrics.json` |
-| `scripts/smoke.py`, `scripts/train.py`, `scripts/onnx_check.py` | Dev scripts: env smoke, short local PPO, ONNX vs torch |
+| `scripts/smoke.py`, `scripts/onnx_check.py` | Dev scripts: env smoke; ONNX vs torch on a training run |
 | `tests/test_grasp_hold.py`, `tests/test_training_cli.py` | Grasp gate (CPU Warp); launcher argument contract |
 | `setup.py`, `MANIFEST.in`, `build.sh` | Script package → `dist/rl-insert-train.tar.gz` |
 | `container/Dockerfile.train`, `container/Dockerfile.train.dockerignore` | Training image (dependencies only) |
@@ -239,9 +246,14 @@ class TaskParams:
     # The peg is held by a compliant weld (see _add_grasp_weld), so grip force is fixed at
     # GripperParams.grip_force and no longer randomized: it only presses the pads on a welded peg.
     grasp_solref: float = 0.002  # s, weld time constant; see _add_grasp_weld for the measured compliance
+    start_joint_offset: float = 0.02  # +/- rad per arm joint at reset (TCP tilt up to a few degrees)
+    pd_gain_scale: tuple[float, float] = (0.8, 1.2)  # arm servo kp and kd, scaled per episode
+    action_delay_steps: tuple[int, int] = (0, 2)  # policy steps; constant within an episode
     episode_s: float = 10.0
     decimation: int = 50  # 1 ms physics, 20 Hz policy
 
+
+PPO_GAMMA = 0.99  # discount, used here to size the success bonus (runner.py uses it for PPO)
 
 # Units and frame of each actor observation term, for config.json. Keep in step with `actor` below.
 OBS_DOC: dict[str, dict[str, str]] = {
@@ -256,12 +268,22 @@ OBS_DOC: dict[str, dict[str, str]] = {
         "doc": "TCP rotation in the hole frame, columns x then y, 3 each",
     },
     "joint_pos": {"units": "rad", "frame": "joint", "doc": "arm joints minus control.default_joint_pos"},
-    "joint_vel": {"units": "rad/s", "frame": "joint", "doc": "arm joint velocities (sim: qvel)"},
+    "joint_vel": {
+        "units": "rad/s",
+        "frame": "joint",
+        "doc": "(q_t - q_{t-1}) / policy_dt from measured arm joint positions at consecutive policy "
+        "steps; 0 on the first step after reset",
+    },
     "last_action": {"units": "action", "frame": "hole", "doc": "previous raw policy output, unscaled"},
     "ik_error": {
         "units": "m (0:3), rad axis-angle (3:6)",
         "frame": "hole",
-        "doc": "commanded minus actual TCP pose: FK(last joint target) - FK(measured); 0 on the first step",
+        "doc": "the IK action's desired TCP pose minus the measured TCP pose, world (= hole) axes. "
+        "At the previous policy step the action a (6, unscaled) set, from the TCP pose (p, R) "
+        "measured then: p_des = p + pos_scale * a[0:3], R_des = R_delta R with R_delta the "
+        "rotation of axis-angle rot_scale * a[3:6]. Now, with the measured TCP pose (p_m, R_m): "
+        "[0:3] = p_des - p_m, [3:6] = axis-angle (rotation vector, |.| <= pi) of q_des * q_m^-1. "
+        "0 on the first step after reset",
     },
 }
 
@@ -368,7 +390,14 @@ def peg_insert_env_cfg(p: TaskParams = TaskParams(), play: bool = False) -> Mana
         ),
         articulation=EntityArticulationInfoCfg(
             actuators=(
-                XmlActuatorCfg(target_names_expr=ARM_JOINTS),
+                # Action latency: the arm's joint targets reach the servos 0-2 policy steps late,
+                # one lag per episode (hold_prob 1: sampled at reset, then held).
+                XmlActuatorCfg(
+                    target_names_expr=ARM_JOINTS,
+                    delay_min_lag=p.action_delay_steps[0] * p.decimation,
+                    delay_max_lag=p.action_delay_steps[1] * p.decimation,
+                    delay_hold_prob=1.0,
+                ),
                 XmlActuatorCfg(target_names_expr=("finger_left",)),  # the gripper; target stays 0 = closed
             ),
         ),
@@ -407,7 +436,7 @@ def peg_insert_env_cfg(p: TaskParams = TaskParams(), play: bool = False) -> Mana
             func=mj_obs.joint_pos_rel, params={"asset_cfg": arm}, noise=Unoise(n_min=-1e-3, n_max=1e-3)
         ),
         "joint_vel": ObservationTermCfg(
-            func=mj_obs.joint_vel_rel, params={"asset_cfg": arm}, noise=Unoise(n_min=-0.02, n_max=0.02)
+            func=mdp.JointVelFiniteDiff, params={"asset_cfg": arm}, noise=Unoise(n_min=-0.02, n_max=0.02)
         ),
         "last_action": ObservationTermCfg(func=mj_obs.last_action),
         "ik_error": ObservationTermCfg(func=mdp.ik_tracking_error, noise=Unoise(n_min=-2e-4, n_max=2e-4)),
@@ -421,6 +450,11 @@ def peg_insert_env_cfg(p: TaskParams = TaskParams(), play: bool = False) -> Mana
     }
 
     depth = p.success_depth
+    dense = {"keypoint_coarse": 1.0, "keypoint_fine": 1.0, "depth": 2.0}  # each term is in [0, 1]
+    # Rewards are scaled by step_dt, so hovering just short of success can earn at most
+    # sum(dense) * dt per step, sum(dense) * dt / (1 - gamma) = 20 discounted. Success ends the
+    # episode, so its one-off bonus (weight * dt) must beat that: twice the bound, weight 800 (40).
+    success_weight = 2 * sum(dense.values()) / (1 - PPO_GAMMA)
     cfg = ManagerBasedRlEnvCfg(
         scene=scene,
         observations={
@@ -440,7 +474,27 @@ def peg_insert_env_cfg(p: TaskParams = TaskParams(), play: bool = False) -> Mana
         },
         events={
             "reset_scene": EventTermCfg(func=mj_events.reset_scene_to_default, mode="reset"),
+            # Before reset_peg_hole: it places the peg and hole from the TCP pose these joints give.
+            "start_pose": EventTermCfg(
+                func=mj_events.reset_joints_by_offset,
+                mode="reset",
+                params={
+                    "position_range": (-p.start_joint_offset, p.start_joint_offset),
+                    "velocity_range": (0.0, 0.0),
+                    "asset_cfg": arm,
+                },
+            ),
             "reset_peg_hole": EventTermCfg(func=mdp.ResetPegInHand, mode="reset", params={"p": pd}),
+            "arm_pd_gains": EventTermCfg(
+                func=dr.pd_gains,
+                mode="reset",
+                params={
+                    # actuator_ids index entity.actuators: [0] is the arm XmlActuatorCfg group
+                    "asset_cfg": SceneEntityCfg("robot", actuator_ids=[0]),
+                    "kp_range": p.pd_gain_scale,
+                    "kd_range": p.pd_gain_scale,
+                },
+            ),
             "friction_peg_hole": EventTermCfg(
                 func=dr.geom_friction,
                 mode="reset",
@@ -462,14 +516,14 @@ def peg_insert_env_cfg(p: TaskParams = TaskParams(), play: bool = False) -> Mana
         },
         rewards={
             "keypoint_coarse": RewardTermCfg(
-                func=mdp.keypoint_tanh, weight=1.0, params={"std": 0.02, "depth": depth}
+                func=mdp.keypoint_tanh, weight=dense["keypoint_coarse"], params={"std": 0.02, "depth": depth}
             ),
             "keypoint_fine": RewardTermCfg(
-                func=mdp.keypoint_tanh, weight=1.0, params={"std": 0.003, "depth": depth}
+                func=mdp.keypoint_tanh, weight=dense["keypoint_fine"], params={"std": 0.003, "depth": depth}
             ),
-            "depth": RewardTermCfg(func=mdp.insertion_depth, weight=2.0, params={"depth": depth}),
+            "depth": RewardTermCfg(func=mdp.insertion_depth, weight=dense["depth"], params={"depth": depth}),
             "success": RewardTermCfg(
-                func=mdp.success, weight=50.0, params={"depth": depth, "centred": p.success_centred}
+                func=mdp.success, weight=success_weight, params={"depth": depth, "centred": p.success_centred}
             ),
             "action_rate": RewardTermCfg(func=mj_rew.action_rate_l2, weight=-0.01),
             "joint_vel": RewardTermCfg(func=mj_rew.joint_vel_l2, weight=-0.01, params={"asset_cfg": arm}),
@@ -699,11 +753,14 @@ def ee_rot6d(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def ik_tracking_error(env: ManagerBasedRlEnv, action_name: str = "ee_delta") -> torch.Tensor:
-    """Commanded minus actual TCP pose (pos m, axis-angle rad): the contact proxy.
+    """Commanded minus measured TCP pose (pos m, axis-angle rad), world axes: the contact proxy.
 
-    The commanded pose is the IK action's desired pose (private _desired_pos/_desired_quat: mjlab
-    has no public accessor). Its reset() zeroes that buffer, so the first step of an episode
-    reports zero instead of a bogus error. On the real arm: FK(last joint target) - FK(measured).
+    Commanded = the IK action's desired pose (private _desired_pos/_desired_quat: mjlab has no
+    public accessor), set when the last action was processed: p_des = p + pos_scale * a[:3],
+    R_des = R_delta(rot_scale * a[3:]) R, from the TCP pose measured at that policy step. The
+    rotation part is the axis-angle of q_des * q_meas^-1. The action's reset() zeroes that buffer,
+    so the first step after reset reports zero instead of a bogus error. env_cfg.OBS_DOC holds
+    the deploy-side recipe.
     """
     term = env.action_manager.get_term(action_name)
     pos, rot = tcp_pose(env)
@@ -711,6 +768,27 @@ def ik_tracking_error(env: ManagerBasedRlEnv, action_name: str = "ee_delta") -> 
     dq = quat_mul(term._desired_quat, quat_conjugate(quat))
     err = torch.cat([term._desired_pos - pos, axis_angle_from_quat(dq)], dim=-1)
     return err * (env.episode_length_buf > 0).unsqueeze(-1)
+
+
+class JointVelFiniteDiff:
+    """(q_t - q_{t-1}) / policy_dt from joint positions at consecutive policy steps; 0 on the first
+    step after reset. What the deploy side computes from measured joints (the arm API has no
+    velocity), unlike qvel.
+
+    Keyed on env.common_step_counter, so extra compute() calls within a step change nothing.
+    """
+
+    def __init__(self, cfg, env: ManagerBasedRlEnv):
+        self.prev = self.cur = None
+        self.step = -1
+
+    def __call__(self, env: ManagerBasedRlEnv, asset_cfg) -> torch.Tensor:
+        if env.common_step_counter != self.step:
+            self.step = env.common_step_counter
+            q = env.scene[asset_cfg.name].data.joint_pos[:, asset_cfg.joint_ids].clone()
+            self.prev, self.cur = (q if self.cur is None else self.cur), q
+        vel = (self.cur - self.prev) / env.step_dt
+        return vel * (env.episode_length_buf > 0).unsqueeze(-1)
 
 
 def hole_pos(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -804,6 +882,8 @@ from __future__ import annotations
 from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 from mjlab.rl.runner import MjlabOnPolicyRunner
 
+from .env_cfg import PPO_GAMMA
+
 
 def peg_insert_ppo_cfg() -> RslRlOnPolicyRunnerCfg:
     return RslRlOnPolicyRunnerCfg(
@@ -813,7 +893,7 @@ def peg_insert_ppo_cfg() -> RslRlOnPolicyRunnerCfg:
             distribution_cfg={"class_name": "GaussianDistribution", "init_std": 1.0, "std_type": "scalar"},
         ),
         critic=RslRlModelCfg(hidden_dims=(256, 128, 64), obs_normalization=True),
-        algorithm=RslRlPpoAlgorithmCfg(entropy_coef=0.005, learning_rate=3e-4),
+        algorithm=RslRlPpoAlgorithmCfg(entropy_coef=0.005, learning_rate=3e-4, gamma=PPO_GAMMA),
         experiment_name="peg_insert_xarm6",
         logger="tensorboard",
         num_steps_per_env=24,
@@ -943,7 +1023,8 @@ def main(num_envs: int = 4) -> None:
             f = mdp.peg_hole_force(env).norm(dim=-1)
             print(
                 f"step {i:3d} depth(mm) {[round(x, 1) for x in (depth * 1e3).tolist()]} "
-                f"lat(mm) {[round(x, 2) for x in (lat * 1e3).tolist()]} F(N) {[round(x, 1) for x in f.tolist()]} "
+                f"lat(mm) {[round(x, 2) for x in (lat * 1e3).tolist()]} "
+                f"F(N) {[round(x, 1) for x in f.tolist()]} "
                 f"rew {[round(x, 3) for x in rew.tolist()]} term {term.tolist()}"
             )
         if term.any():
@@ -968,7 +1049,7 @@ Run: `MJLAB_WARP_QUIET=1 uv run python -m scripts.smoke 4`
 Expected:
 - obs dims actor `(4, 33)`, critic `(4, 51)`, action dim 6;
 - the reset-geometry assertions pass;
-- the scripted descent prints depth, lateral error and force for 50 steps without NaN;
+- the scripted descent runs 60 steps, printing depth, lateral error and force every 10th step and at any termination, without NaN;
 - about 25–35 ms per policy step.
 
 - [ ] **Step 7: Commit**
@@ -1108,7 +1189,7 @@ git commit -m "test: grasp-hold gate on MuJoCo Warp (settle and creep < 0.5 mm)"
 ### Task 4: Viam training entry point
 
 **Files:**
-- Create: `rl_insert/task/viam_upload.py`, `model/__init__.py` (empty), `model/package.py`, `model/training.py`, `scripts/train.py`, `scripts/onnx_check.py`
+- Create: `rl_insert/task/viam_upload.py`, `model/__init__.py` (empty), `model/package.py`, `model/training.py`, `scripts/onnx_check.py`
 - Test: `tests/test_training_cli.py`
 
 - [ ] **Step 1: Write the failing test `tests/test_training_cli.py`**
@@ -1142,7 +1223,12 @@ def test_viam_args_with_placeholder_dataset_and_quoted_custom_args():
 
 def test_sequence_dataset_args_are_accepted_too():
     args = parse_args(
-        ["--model_output_directory=/o", "--binary_data_file=/b", "--tabular_data_file=/t", "--sequences_file=/s"]
+        [
+            "--model_output_directory=/o",
+            "--binary_data_file=/b",
+            "--tabular_data_file=/t",
+            "--sequences_file=/s",
+        ]
     )
     assert args.run_name.startswith("peg-insert-")
 
@@ -1226,8 +1312,9 @@ from rl_insert.task.env_cfg import OBS_DOC, TaskParams
 
 SCHEMA_VERSION = 1
 
-# model_metrics.json name -> rsl_rl / mjlab tensorboard scalar tag. Termination rates are the
-# fraction of the episodes that ended in that iteration ending that way.
+# model_metrics.json name -> tensorboard scalar tag. mjlab logs Episode_Termination/<k> as the number
+# of envs that ended for reason k per reset (count_nonzero), averaged by rsl_rl over the iteration,
+# so build_metrics turns those into rates: each count over the sum of all four at that iteration.
 METRIC_TAGS = {
     "success_rate": "Episode_Termination/success",
     "slip_rate": "Episode_Termination/peg_slipped",
@@ -1343,6 +1430,17 @@ def build_config(onnx_path: Path, env_cfg: ManagerBasedRlEnvCfg, p: TaskParams, 
             "difficulty_init": p.difficulty_init,
             "hole_friction": list(events["friction_peg_hole"].params["ranges"]),
             "pad_friction": list(events["friction_finger_peg"].params["ranges"]),
+            "start_joint_offset_rad": p.start_joint_offset,
+            "arm_pd_gain_scale": list(p.pd_gain_scale),
+            "action_delay_policy_steps": list(p.action_delay_steps),
+            "observation_noise": "per term: observation.terms[].train_noise (uniform)",
+            "not_modelled": [
+                "force/torque sensing (none on the real arm either)",
+                "hole orientation error (the hole is upright, zero yaw; bias is position only)",
+                "part dimension tolerances (clearance is fixed per run)",
+                "real grasp slip (the grasp is a compliant weld)",
+                "joint-target streaming: sim re-solves IK toward the desired pose every 1 ms",
+            ],
         },
         "grasp_model": {
             "type": "weld",
@@ -1359,10 +1457,17 @@ def build_metrics(event_dir: Path) -> dict[str, list[float]]:
     ea = EventAccumulator(str(event_dir), size_guidance={"scalars": 0})
     ea.Reload()
     have = set(ea.Tags()["scalars"])
+    series = {tag: {e.step: e.value for e in ea.Scalars(tag)} for tag in METRIC_TAGS.values() if tag in have}
+    ends = [v for tag, v in series.items() if tag.startswith("Episode_Termination/")]
+    total = {step: sum(e.get(step, 0.0) for e in ends) for step in set().union(*ends)}
     metrics = {}
     for name, tag in METRIC_TAGS.items():
-        if tag in have:
-            values = [e.value for e in ea.Scalars(tag)]
+        if tag in series:
+            points = sorted(series[tag].items())
+            if tag.startswith("Episode_Termination/"):  # count -> rate
+                values = [v / total[step] if total[step] > 0 else 0.0 for step, v in points]
+            else:
+                values = [v for _, v in points]
             stride = max(1, -(-len(values) // MAX_METRIC_POINTS))
             kept = values[::stride]
             if (len(values) - 1) % stride:
@@ -1415,7 +1520,8 @@ logger = logging.getLogger("rl-insert")
 TAGS = ["rl-insert"]
 GL_TEST = """
 import mujoco
-m = mujoco.MjModel.from_xml_string("<mujoco><worldbody><light pos='0 0 1'/><geom size='.1'/></worldbody></mujoco>")
+xml = "<mujoco><worldbody><light pos='0 0 1'/><geom size='.1'/></worldbody></mujoco>"
+m = mujoco.MjModel.from_xml_string(xml)
 d = mujoco.MjData(m)
 mujoco.mj_forward(m, d)
 r = mujoco.Renderer(m, 32, 32)
@@ -1719,52 +1825,15 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 6: Write the dev scripts `scripts/train.py` and `scripts/onnx_check.py`**
+- [ ] **Step 6: Write the dev script `scripts/onnx_check.py`**
 
 ```python
-"""Short PPO run of PegInsert-xArm6 through mjlab's own training entry point.
+"""Check a model package's policy.onnx against its checkpoint.pt on one real observation.
 
-uv run python -m scripts.train [iterations] [num_envs]          # CPU (macOS: MUJOCO_GL=cgl for video)
-
-Logs to logs/rsl_rl/peg_insert_xarm6/<timestamp>/: model_<it>.pt, <run>.onnx (exported on every
-save by PegInsertRunner), tensorboard events, params/, videos/train/rl-video-step-0.mp4.
+uv run python -m scripts.onnx_check <package_dir>    # model.training's --model_output_directory
 """
 
-import sys
-
-from mjlab.scripts.train import TrainConfig, launch_training
-from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
-
-from rl_insert.task import TASK_ID
-
-
-def main(iterations: int = 3, num_envs: int = 4) -> None:
-    env = load_env_cfg(TASK_ID)
-    env.scene.num_envs = num_envs
-    agent = load_rl_cfg(TASK_ID)
-    agent.max_iterations = iterations
-    agent.save_interval = 1
-    cfg = TrainConfig(
-        env=env,
-        agent=agent,
-        video=True,
-        video_length=40,  # frames = policy steps (20 Hz), so 2 s
-        video_interval=2000,  # env steps (VideoRecorder.step_count), not iterations; step 0 fires
-        gpu_ids=None,  # CPU. On the A100s: [0] or "all" (torchrunx, one process per GPU)
-    )
-    launch_training(TASK_ID, cfg)
-
-
-if __name__ == "__main__":
-    main(*(int(a) for a in sys.argv[1:]))
-```
-
-```python
-"""Check the exported ONNX against the torch policy on one real observation.
-
-uv run python -m scripts.onnx_check [run_dir]     # default: latest run under logs/rsl_rl/peg_insert_xarm6
-"""
-
+import json
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -1776,15 +1845,14 @@ import torch
 
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import RslRlVecEnvWrapper
-from mjlab.tasks.registry import load_env_cfg, load_rl_cfg
 
-from rl_insert.task import TASK_ID, PegInsertRunner
+from rl_insert.task import PegInsertRunner, TaskParams, peg_insert_env_cfg, peg_insert_ppo_cfg
 
 
-def main(run_dir: str | None = None) -> None:
-    run = Path(run_dir) if run_dir else max(Path("logs/rsl_rl/peg_insert_xarm6").iterdir())
-    ckpt = max(run.glob("model_*.pt"), key=lambda p: int(p.stem.split("_")[1]))
-    onnx_path = run / f"{run.name}.onnx"
+def main(package_dir: str) -> None:
+    pkg = Path(package_dir)
+    ckpt, onnx_path = pkg / "checkpoint.pt", pkg / "policy.onnx"
+    clearance = json.loads((pkg / "config.json").read_text())["task"]["clearance_m"]
 
     model = onnx.load(onnx_path)
     print(
@@ -1798,21 +1866,22 @@ def main(run_dir: str | None = None) -> None:
     print("first ops (normalizer = Sub/Div before the first Gemm):", ops[:6])
     print("metadata:", {p.key: p.value[:80] for p in model.metadata_props})
 
-    env_cfg = load_env_cfg(TASK_ID, play=True)
+    env_cfg = peg_insert_env_cfg(TaskParams(clearance=clearance), play=True)
     env_cfg.scene.num_envs = 1
     env = RslRlVecEnvWrapper(ManagerBasedRlEnv(env_cfg, device="cpu"))
-    runner = PegInsertRunner(env, asdict(load_rl_cfg(TASK_ID)), log_dir=None, device="cpu")
+    runner = PegInsertRunner(env, asdict(peg_insert_ppo_cfg()), log_dir=None, device="cpu")  # no logs written
     runner.load(str(ckpt))
     policy = runner.get_inference_policy("cpu")
 
-    obs = env.get_observations()
+    for _ in range(3):  # a few random steps, so velocities, last action and IK error are non-zero
+        obs, *_ = env.step(torch.rand(1, 6) * 2 - 1)
     with torch.no_grad():
         torch_act = policy(obs).numpy()
     sess = ort.InferenceSession(str(onnx_path))
     onnx_act = sess.run(None, {"obs": obs["actor"].numpy().astype(np.float32)})[0]
     print("torch:", torch_act.round(5), "\nonnx: ", onnx_act.round(5))
     err = np.abs(torch_act - onnx_act).max()
-    print(f"max abs diff: {err:.2e}  (checkpoint {ckpt.name})")
+    print(f"max abs diff: {err:.2e}")
     assert err < 1e-5
 
     # The normalizer must matter: running the MLP on raw obs (normalizer bypassed) differs.
@@ -1821,7 +1890,7 @@ def main(run_dir: str | None = None) -> None:
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:])
+    main(sys.argv[1])
 ```
 
 - [ ] **Step 7: Run the CLI tests and the full suite**
@@ -1836,21 +1905,21 @@ OUT=$(mktemp -d)/out
 MJLAB_WARP_QUIET=1 uv run python -m model.training --model_output_directory=$OUT --dataset_file=x \
   --num_envs=2 --max_iterations=2 --video_every_iters=1 --video_length=20
 ls $OUT; ls $OUT/tmp/logs/*/videos/train
-MJLAB_WARP_QUIET=1 uv run python -m scripts.onnx_check $(dirname $(ls $OUT/tmp/logs/*/*.onnx))
+MJLAB_WARP_QUIET=1 uv run python -m scripts.onnx_check $OUT
 ```
 
 Expected:
 - `$OUT` holds `checkpoint.pt`, `config.json`, `model_metrics.json`, `policy.onnx` and `tmp/`;
 - two clips exist, `rl-video-step-0.mp4` and `rl-video-step-24.mp4`;
 - the log says the upload was skipped (no credentials);
-- `onnx_check` reports a max difference below 1e-5.
+- `onnx_check` reports `obs` [1,33] → `actions` [1,6] and a max difference from torch below 1e-5.
 
 `model_metrics.json` may be `{}` on a run this short, because no episode ends.
 
 - [ ] **Step 9: Commit**
 
 ```bash
-git add rl_insert/task/viam_upload.py model scripts/train.py scripts/onnx_check.py tests/test_training_cli.py
+git add rl_insert/task/viam_upload.py model scripts/onnx_check.py tests/test_training_cli.py
 git commit -m "feat: Viam training entry point (train/probe modes, video upload, config.json)"
 ```
 
@@ -1996,7 +2065,7 @@ RUN pip install --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}" "to
     && pip install \
         "warp-lang==${WARP_VERSION}" \
         "mjlab @ https://github.com/mujocolab/mjlab/archive/${MJLAB_REF}.tar.gz" \
-        "viam-sdk>=0.85" onnxruntime tensorboard pytest \
+        "viam-sdk>=0.85" onnxruntime tensorboard \
     && python3 -c "import torch, mjlab, mujoco_warp, onnxruntime, viam; print('torch', torch.__version__, torch.version.cuda)"
 ```
 
@@ -2085,16 +2154,33 @@ viam packages export --org-id=16518049-9dd3-479f-9644-c5d112aa42d8 --name=rl-ins
   --type=ml_model --destination=/tmp/rl-insert-probe && cat /tmp/rl-insert-probe/*/probe.json
 ```
 
-Also confirm in the Viam app (DATA, tag `probe`) that the probe clip arrived under the `rl-insert` machine.
+If the package doesn't appear for export, `model.training` also prints `probe.json` to stdout: read it from `viam train logs`. Also confirm in the Viam app (DATA, tag `probe`) that the probe clip arrived under the `rl-insert` machine.
 
 - [ ] **Step 6: Decide from `probe.json`, and fix before Task 8:**
   - **`cuda.torch_cuda_available` false, or `cuda_driver_version` below (13, 0):** the driver is older than 580. Rebuild with `--build-arg TORCH_CUDA=cu126 --build-arg WARP_VERSION=1.17.0`, push as `0.1.0-2`, register it, and re-probe. If mujoco-warp fails with warp 1.17, stop and report to the user.
   - **`gl.backend` null:** video is off; train anyway and report it. **Backend egl with an llvmpipe renderer:** fine, it's CPU rendering of env 0 only.
   - **`grasp_hold.pass` false on CUDA:** stop. That's a plan-1-style physics issue; report the numbers.
   - **`video.uploaded` false with an error:** fix the upload (key scope, part ID) before Task 8. Videos are the point of the user's request.
-  - **Throughput:** `throughput.policy_steps_per_s` at 4096 envs sets the iteration time (24 policy steps per env per iteration). Pick `max_iterations` so Task 8 runs about 2–4 hours.
+  - **Throughput:** `throughput.policy_steps_per_s` is a sanity check only. It uses random actions with no PPO update; Step 7 measures the real iteration time.
 
-- [ ] **Step 7: Write `docs/superpowers/specs/2026-11-17-vertex-probe-results.md`** (the IDs, `probe.json`, the decisions) **and commit it**
+- [ ] **Step 7: Run a short training job on the GPU.** The probe never exercises the train path on the GPU: `run_train`, the VideoRecorder, ONNX export, tensorboard, and writing the package to `/gcs`. Run it for minutes before the multi-hour job:
+
+```bash
+viam train submit custom from-registry --org-id=16518049-9dd3-479f-9644-c5d112aa42d8 \
+  --dataset-id=6581c38d39e1f5ebd5bc0e0f --model-name=rl-insert-smoke --model-version=1 \
+  --script-name=16518049-9dd3-479f-9644-c5d112aa42d8:rl-insert-train --version=1 \
+  --container-id=<container-id> \
+  --args=clearance_mm=1.0,num_envs=4096,max_iterations=3,video_every_iters=1,video_length=40,upload_part_id=cab989eb-90a0-4dce-8fc6-2c50d0ed1f10,run_name=smoke-1
+```
+
+Expected:
+- the job completes;
+- `viam packages export --name=rl-insert-smoke ...` gives `policy.onnx`, `config.json`, `checkpoint.pt` and `model_metrics.json` (possibly `{}`);
+- about 3 clips tagged `smoke-1` appear in Viam Data.
+
+From `viam train logs`, read the seconds per PPO iteration, which rsl_rl logs every iteration. Pick Task 8's `max_iterations` so the job runs about 2–4 hours.
+
+- [ ] **Step 8: Write `docs/superpowers/specs/2026-11-17-vertex-probe-results.md`** (the IDs, `probe.json`, the smoke job's iteration time, the decisions) **and commit it**
 
 ```bash
 git add docs/superpowers/specs/2026-11-17-vertex-probe-results.md
@@ -2123,7 +2209,12 @@ viam train submit custom from-registry --org-id=16518049-9dd3-479f-9644-c5d112aa
 viam packages export --org-id=16518049-9dd3-479f-9644-c5d112aa42d8 --name=rl-insert --version=1 \
   --type=ml_model --destination=/tmp/rl-insert-v1
 ls /tmp/rl-insert-v1/*; python3 -m json.tool /tmp/rl-insert-v1/*/model_metrics.json | head -40
-MJLAB_WARP_QUIET=1 uv run python -m scripts.onnx_check /tmp/rl-insert-v1/*   # if it accepts a dir with policy.onnx; else load policy.onnx in onnxruntime with a zero [1,33] obs
+uv run python -c "
+import glob, numpy as np, onnxruntime as ort
+s = ort.InferenceSession(glob.glob('/tmp/rl-insert-v1/*/policy.onnx')[0])
+out = s.run(None, {'obs': np.zeros((1, 33), np.float32)})[0]
+assert out.shape == (1, 6) and np.isfinite(out).all(), out
+print('policy.onnx ok', out)"
 ```
 
 Expected: `policy.onnx`, `config.json`, `checkpoint.pt` and a non-empty `model_metrics.json`.
