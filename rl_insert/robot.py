@@ -26,7 +26,7 @@ class GripperParams:
     """UFactory xArm Gripper G2 (AG1200), measured from its STEP file.
 
     Mount face (flange contact) to pad centre is 156.6 mm; the fingertips end 176.3 mm out.
-    ponytail: if the flange seats on the 5 mm locating spigot instead, add 5 mm to tcp.
+    It seats flat on the mount face (confirmed on the real arm), not on the 5 mm locating spigot.
     """
     tcp: float = 0.1566  # flange to the pad centre, along the flange z axis
     finger_length: float = 0.0375  # pad length along the gripper axis
