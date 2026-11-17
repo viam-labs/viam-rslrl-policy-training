@@ -26,6 +26,8 @@ import mujoco_warp as mjw
 import numpy as np
 import warp as wp
 
+wp.config.quiet = True
+
 from rl_insert.peg_hole import PegHoleParams, driven_peg_scene
 
 SPEED = 0.04  # m/s, the policy's top speed: 2 mm per 50 ms step
@@ -47,8 +49,10 @@ def target_z(step: int, dt: float) -> float:
     return 0.003 - SPEED * step * dt
 
 
-def classify(p: PegHoleParams, tip: np.ndarray) -> str:
-    if not np.all(np.isfinite(tip)):
+def classify(p: PegHoleParams, q: np.ndarray) -> str:
+    tip = q[:3]
+    # tilt hinges are unlimited: pegs legitimately jam at a tilt, but past 45 deg it has flipped
+    if not np.all(np.isfinite(q)) or np.abs(q[3:5]).max() > math.radians(45):
         return "blew_up"
     if np.hypot(*tip[:2]) >= p.hole_radius + p.wall or tip[2] <= -p.depth - 0.0005 or tip[2] >= 0.003:
         return "blew_up"
@@ -63,11 +67,11 @@ def run_cpu(m: mujoco.MjModel, q0: np.ndarray) -> np.ndarray:
         if i % CTRL_EVERY == 0:
             d.ctrl[2] = target_z(i, m.opt.timestep)
         mujoco.mj_step(m, d)
-    return d.qpos[:3].copy()
+    return d.qpos[:5].copy()
 
 
 def run_warp(m: mujoco.MjModel, q0: np.ndarray) -> tuple[np.ndarray, float, float]:
-    """Final tips, world-steps per second, and peak contact-buffer use (fraction of capacity)."""
+    """Final qpos (x, y, z, tilts), world-steps per second, and peak contact-buffer use (fraction of capacity)."""
     n = len(q0)
     mw = mjw.put_model(m)
     # nconmax and njmax are per world; the total contact buffer is nconmax * nworld
@@ -76,6 +80,10 @@ def run_warp(m: mujoco.MjModel, q0: np.ndarray) -> tuple[np.ndarray, float, floa
     dw.qpos = wp.array(q0.astype(np.float32), dtype=float)
     ctrl = q0.astype(np.float32).copy()
     steps = int(SECONDS / m.opt.timestep)
+    warm = mjw.put_data(m, mujoco.MjData(m), nworld=1, nconmax=NCONMAX, njmax=NJMAX)
+    mjw.step(mw, warm)  # compile kernels outside the timer
+    wp.synchronize()
+    # rate still includes a host sync every CTRL_EVERY steps and no CUDA graph capture: a lower bound
     start = time.perf_counter()
     for i in range(steps):
         if i % CTRL_EVERY == 0:
@@ -85,7 +93,7 @@ def run_warp(m: mujoco.MjModel, q0: np.ndarray) -> tuple[np.ndarray, float, floa
         mjw.step(mw, dw)
     wp.synchronize()
     elapsed = time.perf_counter() - start
-    return dw.qpos.numpy()[:, :3], n * steps / elapsed, peak_contacts / (NCONMAX * n)
+    return dw.qpos.numpy()[:, :5], n * steps / elapsed, peak_contacts / (NCONMAX * n)
 
 
 def main() -> int:
@@ -96,7 +104,6 @@ def main() -> int:
     ap.add_argument("--clearance", type=float, nargs="+", default=[0.001, 0.0005, 0.0002])
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
-    wp.config.quiet = True
     wp.set_device(args.device)
     rng = np.random.default_rng(args.seed)
     report, ok = {"device": args.device, "nworld": args.nworld, "results": []}, True
@@ -104,10 +111,11 @@ def main() -> int:
         p = PegHoleParams(clearance=c)
         m = driven_peg_scene(p).compile()
         q0 = initial_states(p, args.nworld, rng)
-        tips, rate, buffer_use = run_warp(m, q0)
-        warp_outcomes = [classify(p, t) for t in tips]
+        qs, rate, buffer_use = run_warp(m, q0)
+        warp_outcomes = [classify(p, q) for q in qs]
         k = min(args.reference, args.nworld)
-        cpu_outcomes = [classify(p, run_cpu(m, q0[i])) for i in range(k)]
+        cpu_q = [run_cpu(m, q0[i]) for i in range(k)]
+        cpu_outcomes = [classify(p, q) for q in cpu_q]
         agree = sum(a == b for a, b in zip(warp_outcomes[:k], cpu_outcomes)) / k
         warp_rate = warp_outcomes[:k].count("inserted") / k
         cpu_rate = cpu_outcomes.count("inserted") / k
