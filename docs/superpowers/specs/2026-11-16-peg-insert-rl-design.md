@@ -159,11 +159,35 @@ error, too many overruns, or `stop`.
 - On any failure: cancel the stream and call `arm.Stop`. A half-close would let queued points play
   out. Record the reason.
 
-## Infrastructure
+## Infrastructure (updated 2026-11-17)
 
-- Iterate on the cloud sim machine (L40S, believed 48 GB) with `docker run --gpus all` of the
-  training container.
-- Viam training jobs run on 2× A100 40GB; the script uses one GPU.
+**Training runs as Viam custom training jobs.**
+- Hardware: Vertex AI, 2× A100 40GB; the script uses one GPU.
+- Job contract (from viam-app):
+  - Vertex ignores the image's entry point. It `pip install`s the uploaded script package and runs `python3 -m model.training` with `--model_output_directory` and the dataset args.
+  - Custom args arrive as `--key=value`.
+  - The env holds `API_KEY` and `API_KEY_ID`: an org-scoped key with the submitter's permissions, deleted when the job ends.
+  - Everything in the output dir except `tmp/` becomes the model package. `model_metrics.json` becomes package metadata where the org has the feature flag.
+- Packaging:
+  - The container holds dependencies only: torch (CUDA), mjlab, viam-sdk, ffmpeg, and EGL and OSMesa libraries.
+  - The script package holds `model/training.py`, `rl_insert/` and its assets.
+  - So the task can change without rebuilding the container.
+- mjlab is pinned to a `main` commit that uses MuJoCo 4.0.1, the version plan 1 validated. The PyPI 1.6.0 release pins MuJoCo 3.11.
+
+**Sim sandbox (plan 1's GPU probe).** It gave an NVIDIA L4, not an L40S, and has no Docker. It's fine for quick GPU checks with `scripts/probe_sim_sandbox.sh`; it isn't the training target.
+
+## Training videos to Viam Data
+
+The training script records sim videos at an interval and uploads each one to Viam Data, so runs can be reviewed later.
+- **Recording:**
+  - mjlab's `VideoRecorder` records env 0 every `video_every_iters` PPO iterations (default 250) for `video_length` steps.
+  - Frames come from `mujoco.Renderer`. The script tries EGL first and falls back to OSMesa (CPU software rendering), because EGL on Vertex nodes is unconfirmed.
+- **Upload:**
+  - A background thread uploads each finished MP4 with `DataClient.file_upload_from_path` and the job's API key. A last pass runs after training.
+  - Uploads need a machine part. Videos go to the `rl-insert` machine in DevRelDemos, passed as `--upload_part_id`, so jobs must run in the DevRelDemos org.
+  - Tags: `rl-insert`, the run name, and `iter-<n>`. An optional `--upload_dataset_id` adds each video to a dataset.
+- **Missing credentials or part ID:** the script logs a warning and keeps videos local. It never fails the job.
+- **Model package:** videos aren't included.
 
 ## Risks and spikes (do first)
 
