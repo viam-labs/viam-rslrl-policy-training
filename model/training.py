@@ -25,6 +25,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -33,6 +34,7 @@ from pathlib import Path
 logger = logging.getLogger("rl-insert")
 
 TAGS = ["rl-insert"]
+UPLOAD_JOIN_TIMEOUT = 60.0  # s to wait for the uploader thread at the end of training
 GL_TEST = """
 import mujoco
 xml = "<mujoco><worldbody><light pos='0 0 1'/><geom size='.1'/></worldbody></mujoco>"
@@ -106,7 +108,9 @@ def select_gl() -> dict:
     candidates = ["cgl"] if platform.system() == "Darwin" else ["egl", "osmesa"]
     info: dict = {"tried": {}, "backend": None}
     for backend in candidates:
-        env = {**os.environ, "MUJOCO_GL": backend}  # mujoco sets PYOPENGL_PLATFORM to match
+        # mujoco sets PYOPENGL_PLATFORM to match. Test on the device training will render on.
+        env = {**os.environ, "MUJOCO_GL": backend, "MUJOCO_EGL_DEVICE_ID": "0"}
+        env.setdefault("CUDA_VISIBLE_DEVICES", "0")
         try:
             r = subprocess.run(
                 [sys.executable, "-c", GL_TEST], env=env, capture_output=True, text=True, timeout=120
@@ -156,32 +160,56 @@ class VideoUploader(threading.Thread):
         from rl_insert.task.viam_upload import upload_video
 
         for f in sorted(self.folder.glob("*.mp4")):
-            if f.name in self.done:
-                continue
-            size = f.stat().st_size
-            stable = size > 0 and self.sizes.get(f) == size and time.time() - f.stat().st_mtime > self.poll_s
-            self.sizes[f] = size
-            if not (final or stable):
-                continue
-            m = re.search(r"step-(\d+)", f.name)
-            tags = [*TAGS, self.args.run_name] + ([f"iter-{int(m[1]) // self.steps_per_iter}"] if m else [])
             try:
-                ds = [self.args.upload_dataset_id] if self.args.upload_dataset_id else None
-                self.done[f.name] = upload_video(str(f), self.args.upload_part_id, tags, ds)
-                logger.info("video %s -> %s", f.name, self.done[f.name])
+                self._handle(f, final, upload_video)
             except Exception:
-                self.done[f.name] = None
-                logger.error("video upload failed for %s:\n%s", f.name, traceback.format_exc())
+                logger.error("video sweep failed for %s:\n%s", f.name, traceback.format_exc())
+
+    def _handle(self, f: Path, final: bool, upload_video) -> None:
+        if f.name in self.done:
+            return
+        size = f.stat().st_size
+        stable = size > 0 and self.sizes.get(f) == size and time.time() - f.stat().st_mtime > self.poll_s
+        self.sizes[f] = size
+        if not (final or stable):
+            return
+        m = re.search(r"step-(\d+)", f.name)
+        tags = [*TAGS, self.args.run_name] + ([f"iter-{int(m[1]) // self.steps_per_iter}"] if m else [])
+        try:
+            ds = [self.args.upload_dataset_id] if self.args.upload_dataset_id else None
+            self.done[f.name] = upload_video(str(f), self.args.upload_part_id, tags, ds)
+            logger.info("video %s -> %s", f.name, self.done[f.name])
+        except Exception:
+            self.done[f.name] = None
+            logger.error("video upload failed for %s:\n%s", f.name, traceback.format_exc())
+
+
+def set_visible_devices(cuda: bool) -> None:
+    """run_train picks cuda:LOCAL_RANK (0) of the visible devices, "" is CPU. Keep a caller's choice."""
+    if "CUDA_VISIBLE_DEVICES" not in os.environ:
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0" if cuda else ""
+
+
+def write_package(out: Path, log_dir: Path, env_cfg, p, run_name: str) -> None:
+    from model.package import build_config, build_metrics, write_json
+
+    ckpt = max(log_dir.glob("model_*.pt"), key=lambda f: int(f.stem.split("_")[1]))
+    shutil.copy(log_dir / f"{log_dir.name}.onnx", out / "policy.onnx")
+    shutil.copy(ckpt, out / "checkpoint.pt")
+    write_json(out / "config.json", build_config(out / "policy.onnx", env_cfg, p, run_name))
+    write_json(out / "model_metrics.json", build_metrics(log_dir))
+    logger.info("wrote %s (from %s)", sorted(f.name for f in out.iterdir()), ckpt.name)
 
 
 def train(args: argparse.Namespace, gl: dict) -> None:
     from mjlab.scripts.train import TrainConfig, run_train
 
-    from model.package import build_config, build_metrics, write_json
     from rl_insert.task import TASK_ID, TaskParams, peg_insert_env_cfg, peg_insert_ppo_cfg
 
     out = args.model_output_directory
-    log_dir = out / "tmp" / "logs" / args.run_name  # all run output stays under tmp/
+    # Train on local disk: the output dir may be a FUSE mount that re-uploads on every flush.
+    # Copied to <out>/tmp/logs at the end.
+    log_dir = Path(tempfile.mkdtemp(prefix="rl-insert-")) / "logs" / args.run_name
     p = TaskParams(clearance=args.clearance_mm / 1000)
     env_cfg = peg_insert_env_cfg(p)
     env_cfg.scene.num_envs = args.num_envs
@@ -202,31 +230,32 @@ def train(args: argparse.Namespace, gl: dict) -> None:
         gpu_ids=None,  # unused: run_train is called directly, on one device
     )
     # run_train picks its device from CUDA_VISIBLE_DEVICES: "" is CPU, otherwise cuda:LOCAL_RANK.
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0" if _device().startswith("cuda") else ""
+    set_visible_devices(_device().startswith("cuda"))
 
     uploader = VideoUploader(log_dir / "videos" / "train", agent.num_steps_per_env, args)
     if video:
         uploader.folder.mkdir(parents=True, exist_ok=True)
         uploader.start()
     try:
-        run_train(TASK_ID, cfg, log_dir)
+        try:
+            run_train(TASK_ID, cfg, log_dir)
+        except BaseException:
+            try:  # keep whatever the run produced
+                write_package(out, log_dir, env_cfg, p, args.run_name)
+            except Exception:
+                logger.error("no package after failed run:\n%s", traceback.format_exc())
+            raise
+        write_package(out, log_dir, env_cfg, p, args.run_name)  # before any upload can stall
     finally:
         uploader.stop.set()
         if video:
-            uploader.join()
+            uploader.join(timeout=UPLOAD_JOIN_TIMEOUT)
             uploader.sweep(final=True)
-
-    ckpt = max(log_dir.glob("model_*.pt"), key=lambda f: int(f.stem.split("_")[1]))
-    shutil.copy(log_dir / f"{log_dir.name}.onnx", out / "policy.onnx")
-    shutil.copy(ckpt, out / "checkpoint.pt")
-    write_json(out / "config.json", build_config(out / "policy.onnx", env_cfg, p, args.run_name))
-    write_json(out / "model_metrics.json", build_metrics(log_dir))
-    logger.info(
-        "wrote %s (from %s); videos: %s", sorted(f.name for f in out.iterdir()), ckpt.name, uploader.done
-    )
+        shutil.copytree(log_dir.parent, out / "tmp" / "logs", dirs_exist_ok=True)
+        logger.info("videos: %s", uploader.done)
 
 
-def _check(results: dict, name: str, fn) -> None:
+def _check(results: dict, name: str, fn, out: Path | None = None) -> None:
     t0 = time.perf_counter()
     try:
         results[name] = fn()
@@ -234,6 +263,10 @@ def _check(results: dict, name: str, fn) -> None:
         results[name] = {"error": f"{type(e).__name__}: {e}", "traceback": traceback.format_exc()[-2000:]}
     results[name] = {"check_s": round(time.perf_counter() - t0, 1), **results[name]}
     logger.info("%s: %s", name, json.dumps(results[name], default=str)[:2000])
+    if out is not None:  # after every check, so a crash or hang later loses nothing
+        text = json.dumps(results, indent=2, default=str) + "\n"
+        (out / "probe.json").write_text(text)
+        print(text, flush=True)
 
 
 def probe(args: argparse.Namespace, gl: dict) -> None:
@@ -317,9 +350,7 @@ def probe(args: argparse.Namespace, gl: dict) -> None:
         ("throughput", speed),
         ("video", video),
     ):
-        _check(results, name, fn)
-    (out / "probe.json").write_text(json.dumps(results, indent=2, default=str) + "\n")
-    print(json.dumps(results, indent=2, default=str))
+        _check(results, name, fn, out)
 
 
 def main(argv: list[str] | None = None) -> None:
