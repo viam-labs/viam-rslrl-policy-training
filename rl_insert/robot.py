@@ -40,6 +40,8 @@ class GripperParams:
 def load_xarm6(arm: ArmParams = ArmParams()) -> mujoco.MjSpec:
     """The xArm6 at the world origin, with one position actuator per joint (rad)."""
     spec = mujoco.MjSpec.from_file(str(XARM6_URDF))
+    for body in spec.bodies[1:]:  # skip world
+        body.gravcomp = 1.0  # the real xArm servo holds pose; without this the TCP sags ~9 mm
     for name in ARM_JOINTS:
         act = spec.add_actuator(name=name, target=name, trntype=mujoco.mjtTrn.mjTRN_JOINT)
         act.set_to_position(kp=arm.kp, dampratio=arm.dampratio, inheritrange=True)
@@ -53,13 +55,13 @@ def add_gripper(spec: mujoco.MjSpec, g: GripperParams = GripperParams()) -> mujo
     The actuator is stiff enough to saturate, so a closed command squeezes with grip_force.
     """
     flange = spec.body(FLANGE)
-    root = flange.add_body(name="gripper", pos=[0, 0, g.tcp - g.finger_length])
+    root = flange.add_body(name="gripper", pos=[0, 0, g.tcp - g.finger_length], gravcomp=1.0)  # see load_xarm6
     root.add_site(name="tcp", pos=[0, 0, g.finger_length], size=[0.002] * 3)
     root.add_geom(name="gripper_palm", type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.02, 0.05, 0.005],
                   pos=[0, 0, -0.005], mass=0.5)
     half = g.max_opening / 2
     for side, sign in (("left", 1.0), ("right", -1.0)):
-        finger = root.add_body(name=f"finger_{side}")
+        finger = root.add_body(name=f"finger_{side}", gravcomp=1.0)
         finger.add_joint(name=f"finger_{side}", type=mujoco.mjtJoint.mjJNT_SLIDE, axis=[0, sign, 0],
                          range=[0, half])
         finger.add_geom(name=f"pad_{side}", type=mujoco.mjtGeom.mjGEOM_BOX, size=[g.pad_width / 2, 0.003, g.finger_length / 2],
