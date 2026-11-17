@@ -390,6 +390,9 @@ def peg_insert_env_cfg(p: TaskParams = TaskParams(), play: bool = False) -> Mana
         sim=SimulationCfg(
             nconmax=64,  # per world; see scripts/smoke.py for the peak seen
             njmax=400,
+            # Peg-hole contacts matched per sensor per world: 61 seen jammed at 0.35 mm clearance (45 at
+            # 1.0 mm); past the cap they're dropped, so the force reading undercounts. Warp's default is 64.
+            contact_sensor_maxmatch=256,
             mujoco=MujocoCfg(timestep=TIMESTEP, integrator="euler", cone="elliptic", impratio=10),
         ),
         decimation=p.decimation,
