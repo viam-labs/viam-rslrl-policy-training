@@ -1,0 +1,2 @@
+recursive-include rl_insert/assets *
+global-exclude __pycache__ *.py[co]
