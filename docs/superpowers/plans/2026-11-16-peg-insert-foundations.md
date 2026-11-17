@@ -981,3 +981,31 @@ Gate:
 git add docs/superpowers/specs/2026-11-16-contact-spike-results.md
 git commit -m "docs: contact spike results on the cloud sim GPU"
 ```
+
+---
+
+## After execution: changes made in review, and items for plan 2
+
+Reviews during execution changed three files away from the code blocks above. The repo is authoritative.
+
+| File | Change |
+|---|---|
+| `spikes/contact_warp.py` | Warm-up step outside the timer; pegs tilted more than 45° count as blow-ups (the largest real jam seen was about 22°) |
+| `rl_insert/robot.py` | `gravcomp=1` on the arm and gripper bodies (without it the TCP sagged 8.6 mm); G2 gripper dimensions |
+| `scripts/probe_gpu.sh` | Prints the CUDA driver version before asserting CUDA |
+
+`tests/test_scene.py` gained `test_arm_holds_pose_under_gravity`, so there are 27 tests.
+
+Carry into plan 2 (the mjlab training env):
+
+1. **Grasp randomisation:** offsets along TCP x and z only. The fingers re-centre a y offset with an impulse.
+2. **Resets:**
+   - Add a keyframe with the peg in hand; the model's default pose puts the peg at the origin, inside the arm base.
+   - Make a batched reset for Warp; `place_peg_in_hand` handles one CPU world.
+3. **Peg-touches-hole checks:** the hole geoms are unnamed, so filter them by `geom_bodyid`.
+4. **Warp checks for the full scene:**
+   - Repeat the friction grasp-hold test on Warp; it has only run in float64 on CPU.
+   - Re-size `nconmax`/`njmax` for the full scene, and monitor constraint rows as well as contacts.
+5. **Speed:** exclude arm-link meshes from collisions they can't have (contype/conaffinity), to cut narrowphase cost.
+6. **Containers:** mount a volume at `/root/.cache/warp` so kernels don't recompile on every `docker run`.
+7. **Test coverage:** test arm poses other than zero; FK/IK in plan 3 depends on them.
