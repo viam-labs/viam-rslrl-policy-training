@@ -54,7 +54,9 @@ def classify(p: PegHoleParams, q: np.ndarray) -> str:
     # tilt hinges are unlimited: pegs legitimately jam at a tilt, but past 45 deg it has flipped
     if not np.all(np.isfinite(q)) or np.abs(q[3:5]).max() > math.radians(45):
         return "blew_up"
-    if np.hypot(*tip[:2]) >= p.hole_radius + p.wall or tip[2] <= -p.depth - 0.0005 or tip[2] >= 0.003:
+    # "sank" means through the 4 mm floor, not into it: a rim-balanced peg that snaps in hits the floor
+    # hard in this inertia-free rig (0.7 mm transient seen on GPU; it rests at 0.1 mm)
+    if np.hypot(*tip[:2]) >= p.hole_radius + p.wall or tip[2] <= -p.depth - 0.002 or tip[2] >= 0.003:
         return "blew_up"
     return "inserted" if tip[2] < -p.depth + 0.001 else "not_inserted"
 
