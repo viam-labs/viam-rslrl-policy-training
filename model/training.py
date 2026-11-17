@@ -94,6 +94,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="machine part the videos are uploaded under (no upload without it)",
     )
     p.add_argument("--upload_dataset_id", type=unquote, default=None)
+    p.add_argument(
+        "--fail_fast_iters",
+        type=lambda s: int(unquote(s)),
+        default=300,
+        help="fail the job if no episode has succeeded by this iteration (0: never)",
+    )
     p.add_argument("--run_name", type=unquote, default=None, help="default: peg-insert-<timestamp>")
     args = p.parse_args(argv)
     args.run_name = args.run_name or time.strftime("peg-insert-%Y%m%d-%H%M%S")
@@ -195,18 +201,29 @@ def set_visible_devices(cuda: bool) -> None:
 def write_package(out: Path, log_dir: Path, env_cfg, p, run_name: str) -> None:
     from model.package import build_config, build_metrics, write_json
 
-    ckpt = max(log_dir.glob("model_*.pt"), key=lambda f: int(f.stem.split("_")[1]))
-    shutil.copy(log_dir / f"{log_dir.name}.onnx", out / "policy.onnx")
+    # The best checkpoint at full difficulty (PegInsertRunner.save), else the last one.
+    best = log_dir / "best.json"
+    if best.exists():
+        ckpt, onnx_path = log_dir / "best.pt", log_dir / "best.onnx"
+        picked = {"why": "best success-rate EMA at full difficulty", **json.loads(best.read_text())}
+    else:
+        ckpt = max(log_dir.glob("model_*.pt"), key=lambda f: int(f.stem.split("_")[1]))
+        onnx_path = log_dir / f"{log_dir.name}.onnx"
+        picked = {"iteration": int(ckpt.stem.split("_")[1]), "success_rate_ema": None, "why": "last (never saved at full difficulty)"}
+    shutil.copy(onnx_path, out / "policy.onnx")
     shutil.copy(ckpt, out / "checkpoint.pt")
-    write_json(out / "config.json", build_config(out / "policy.onnx", env_cfg, p, run_name))
+    config = build_config(out / "policy.onnx", env_cfg, p, run_name)
+    config["checkpoint"] = picked
+    write_json(out / "config.json", config)
     write_json(out / "model_metrics.json", build_metrics(log_dir))
-    logger.info("wrote %s (from %s)", sorted(f.name for f in out.iterdir()), ckpt.name)
+    logger.info("wrote %s (checkpoint %s)", sorted(f.name for f in out.iterdir()), config["checkpoint"])
 
 
 def train(args: argparse.Namespace, gl: dict) -> None:
     from mjlab.scripts.train import TrainConfig, run_train
 
     from rl_insert.task import TASK_ID, TaskParams, peg_insert_env_cfg, peg_insert_ppo_cfg
+    from rl_insert.task.runner import PegInsertRunner
 
     out = args.model_output_directory
     # Train on local disk: the output dir may be a FUSE mount that re-uploads on every flush.
@@ -220,6 +237,7 @@ def train(args: argparse.Namespace, gl: dict) -> None:
     agent.run_name = args.run_name
     if args.max_iterations is not None:
         agent.max_iterations = args.max_iterations
+    PegInsertRunner.fail_fast_iters = args.fail_fast_iters  # run_train builds the runner itself
     video = gl["backend"] is not None and args.video_every_iters > 0
     cfg = TrainConfig(
         env=env_cfg,
