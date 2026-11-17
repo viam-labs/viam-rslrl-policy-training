@@ -19,7 +19,7 @@ docker build --platform linux/amd64 -f container/Dockerfile -t "$IMAGE" .
 
 step "Warp finds CUDA inside the container"
 docker run --rm --gpus all "$IMAGE" python -c \
-  "import warp as wp; wp.init(); assert wp.is_cuda_available(), 'no CUDA'; print(wp.get_cuda_devices())"
+  "import warp as wp; wp.init(); print('CUDA driver', wp.get_cuda_driver_version()); assert wp.is_cuda_available(), 'no CUDA'; print(wp.get_cuda_devices())"
 
 step "contact spike on the GPU"
 docker run --rm --gpus all "$IMAGE" python spikes/contact_warp.py --device cuda --nworld 4096 --reference 64
