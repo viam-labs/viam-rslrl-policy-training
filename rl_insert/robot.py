@@ -10,6 +10,8 @@ import mujoco
 
 ASSETS = Path(__file__).resolve().parent / "assets"  # inside the package so pip installs it
 XARM6_URDF = ASSETS / "xarm6" / "xarm6.urdf"
+G2_MESHES = ASSETS / "g2"  # from UFactory's STEP by scripts/g2_step_to_stl.py
+HIDDEN = 3  # geom group the renderer skips: collision stand-ins the G2 meshes draw over
 ARM_JOINTS = tuple(f"joint{i}" for i in range(1, 7))
 FLANGE = "link_eef"
 
@@ -58,13 +60,10 @@ def add_gripper(spec: mujoco.MjSpec, g: GripperParams = GripperParams()) -> mujo
     root = flange.add_body(name="gripper", pos=[0, 0, g.tcp - g.finger_length], gravcomp=1.0)  # see load_xarm6
     root.add_site(name="tcp", pos=[0, 0, g.finger_length], size=[0.002] * 3)
     root.add_geom(name="gripper_palm", type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.02, 0.05, 0.005],
-                  pos=[0, 0, -0.005], mass=0.5)
-    # Display only: the G2 body between the flange and the palm. The pads stop > 50 mm short of it
-    # at full insertion, so it never touches the hole, and the palm's mass already stands in for it.
-    # ponytail: 60 x 90 mm box, roughly the STEP outline; swap for the STEP mesh if looks matter
-    housing = g.tcp - g.finger_length - 0.01
-    root.add_geom(name="gripper_housing", type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.03, 0.045, housing / 2],
-                  pos=[0, 0, -0.01 - housing / 2], contype=0, conaffinity=0, mass=0)
+                  pos=[0, 0, -0.005], mass=0.5, group=HIDDEN)
+    # Display only: the meshes are in the flange frame (fingers closed), and never touch anything.
+    to_flange = [0, 0, -(g.tcp - g.finger_length)]
+    _add_visual_mesh(spec, root, "g2_body", to_flange)
     half = g.max_opening / 2
     for side, sign in (("left", 1.0), ("right", -1.0)):
         finger = root.add_body(name=f"finger_{side}", gravcomp=1.0)
@@ -72,10 +71,17 @@ def add_gripper(spec: mujoco.MjSpec, g: GripperParams = GripperParams()) -> mujo
                          range=[0, half])
         finger.add_geom(name=f"pad_{side}", type=mujoco.mjtGeom.mjGEOM_BOX, size=[g.pad_width / 2, 0.003, g.finger_length / 2],
                         pos=[0, sign * 0.003, g.finger_length / 2], mass=0.05,
-                        friction=[g.pad_friction, 0.005, 0.0001], solref=[0.002, 1.0])
+                        friction=[g.pad_friction, 0.005, 0.0001], solref=[0.002, 1.0], group=HIDDEN)
+        _add_visual_mesh(spec, finger, f"g2_finger_{side}", to_flange)
     spec.add_equality(type=mujoco.mjtEq.mjEQ_JOINT, name1="finger_left", name2="finger_right",
                       solref=[0.002, 1.0])  # the default soft coupling gives 6 mm under grip force
     act = spec.add_actuator(name="gripper", target="finger_left", trntype=mujoco.mjtTrn.mjTRN_JOINT,
                             ctrlrange=[0, half], forcerange=[-g.grip_force, g.grip_force])
     act.set_to_position(kp=1e4, dampratio=1.0)  # saturates at grip_force once a pad touches the peg
     return root
+
+
+def _add_visual_mesh(spec: mujoco.MjSpec, body: mujoco.MjsBody, name: str, pos) -> None:
+    spec.add_mesh(name=name, file=str(G2_MESHES / f"{name}.stl"))
+    body.add_geom(name=f"{name}_visual", type=mujoco.mjtGeom.mjGEOM_MESH, meshname=name, pos=pos,
+                  contype=0, conaffinity=0, mass=0, rgba=[0.75, 0.75, 0.75, 1])

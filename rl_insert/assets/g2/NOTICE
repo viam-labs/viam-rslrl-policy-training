@@ -1,0 +1,3 @@
+g2_body.stl and g2_finger_{left,right}.stl are derived from UFactory's published CAD for the xArm Gripper G2
+("Gripper G2 3D File.STEP") by scripts/g2_step_to_stl.py: tessellated at 0.5 mm, split into body and fingers,
+moved into the flange frame in metres. Visual only in the sim.
