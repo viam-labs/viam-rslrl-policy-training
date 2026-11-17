@@ -380,11 +380,11 @@ def peg_insert_env_cfg(p: TaskParams = TaskParams(), play: bool = False) -> Mana
             origin_type=ViewerConfig.OriginType.ASSET_BODY,
             entity_name="hole",
             body_name="hole",
-            distance=1.6,  # whole arm in frame (the camera centres on the hole)
+            distance=0.7,  # wrist, gripper, peg and hole in frame (the camera centres on the hole)
             elevation=-20.0,
             azimuth=135.0,
             max_extra_envs=0,  # neighbouring envs' arms otherwise crowd the frame
-            width=640,  # 320x240 leaves the peg a few pixels wide at this distance
+            width=640,  # 320x240 leaves the peg a few pixels wide
             height=480,
         ),
         sim=SimulationCfg(
