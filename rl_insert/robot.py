@@ -54,7 +54,7 @@ def add_gripper(spec: mujoco.MjSpec, g: GripperParams = GripperParams()) -> mujo
     """Two fingers sliding along the flange y axis, coupled by an equality, closed by one actuator.
 
     Control is each finger's travel from centre in metres (0 closed, max_opening / 2 fully open).
-    The actuator is stiff enough to saturate, so a closed command squeezes with grip_force.
+    The actuator is stiff enough to saturate, so a closed command presses each pad with grip_force.
     """
     flange = spec.body(FLANGE)
     root = flange.add_body(name="gripper", pos=[0, 0, g.tcp - g.finger_length], gravcomp=1.0)  # see load_xarm6
@@ -75,9 +75,12 @@ def add_gripper(spec: mujoco.MjSpec, g: GripperParams = GripperParams()) -> mujo
         _add_visual_mesh(spec, finger, f"g2_finger_{side}", to_flange)
     spec.add_equality(type=mujoco.mjtEq.mjEQ_JOINT, name1="finger_left", name2="finger_right",
                       solref=[0.002, 1.0])  # the default soft coupling gives 6 mm under grip force
+    # One actuator drives both fingers through the coupling, so its force splits between the two pads:
+    # 2 x grip_force gives each pad grip_force (the G2's rating is per jaw). At 1 x, each pad pressed 15 N
+    # and the sim cell's peg slid in the fingers at ~31 N, below training's 40 N force limit.
     act = spec.add_actuator(name="gripper", target="finger_left", trntype=mujoco.mjtTrn.mjTRN_JOINT,
-                            ctrlrange=[0, half], forcerange=[-g.grip_force, g.grip_force])
-    act.set_to_position(kp=1e4, dampratio=1.0)  # saturates at grip_force once a pad touches the peg
+                            ctrlrange=[0, half], forcerange=[-2 * g.grip_force, 2 * g.grip_force])
+    act.set_to_position(kp=2e4, dampratio=1.0)  # saturates once the pads close on a 10 mm peg (1e4 stopped at ~46 N)
     return root
 
 

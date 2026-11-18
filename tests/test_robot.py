@@ -49,3 +49,26 @@ def test_kinematics_spec_matches_training_fk(tmp_path):
         out.append((d.site("tcp").xpos.copy(), d.site("tcp").xmat.copy()))
     np.testing.assert_allclose(out[0][0], out[1][0], atol=1e-5)  # to_xml prints ~7 significant digits (rot error to 1.75e-6 over random poses)
     np.testing.assert_allclose(out[0][1], out[1][1], atol=1e-5)  # to_xml prints ~7 significant digits (rot error to 1.75e-6 over random poses)
+
+
+def test_closed_g2_presses_each_pad_with_grip_force():
+    from rl_insert.peg_hole import PegHoleParams, add_peg, configure_options
+    from rl_insert.robot import GripperParams
+    from scripts.export_sim_scene import gripper_spec
+
+    spec = gripper_spec()
+    configure_options(spec)
+    spec.option.gravity = [0, 0, 0]
+    add_peg(spec, spec.worldbody, PegHoleParams(clearance=0.00035), pos=(0, 0, 0.1966), quat=(0, 1, 0, 0))
+    m = spec.compile()
+    d = mujoco.MjData(m)
+    for _ in range(500):  # ctrl 0: closed
+        mujoco.mj_step(m, d)
+    force = {m.geom("pad_left").id: 0.0, m.geom("pad_right").id: 0.0}
+    f = np.zeros(6)
+    for i in range(d.ncon):
+        mujoco.mj_contactForce(m, d, i, f)
+        for g in (d.contact[i].geom1, d.contact[i].geom2):
+            if g in force:
+                force[g] += f[0]
+    np.testing.assert_allclose(list(force.values()), GripperParams().grip_force, rtol=0.02)
