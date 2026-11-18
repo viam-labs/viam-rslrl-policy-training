@@ -35,7 +35,12 @@ off by +/-(2, 2, 1) mm (`hole_mouth_mm` on start, new in 0.1.4). Not reproduced:
 |---|---|---|
 | 0.1.4 (training's success test against the *estimated* hole; > 3 overruns per episode fails) | 6/20 | 11 timeouts with the peg 15-19 mm in (1 mm centring can't pass against a 2 mm-off estimate), 3 short timeouts, 4 overruns (sporadic 20-80 ms joint reads at a steady real-time factor of 1) |
 | 0.1.5 (success tolerances widened by `robustness.hole_bias_m`; fail on > 3 *consecutive* overruns) | 15/20 | 5 timeouts, 0 overruns |
+| 0.1.6 + sim cell 0.2.1 (slip/jam guard, `jam_s` 2 s; G2 pads at 30 N each, was 15) | 18/20 | 2 jams, stopped after ~2.6 s: the peg on the mouth's chamfer 1.2-1.5 mm off the axis while the arm's tip read 6 mm deep (it slid ~5.5 mm up the fingers) |
 
 Steps to success on 0.1.5: 21-57, median 25.
 
 **The remaining failures are grasp slip.** Rerunning the five failed starts gave 3/5 (contact is not deterministic here). In the two that failed again, the arm's nominal tip was 21-22 mm below the estimated mouth and 5.5-7.7 mm off its axis, while the sim's peg was only 11-16 mm in and 0.4 mm off the axis: the peg had slid and pivoted in the fingers while the policy kept pushing for the full 10 s. Training holds the peg with a compliant weld (`grasp_model`, "real grasp slip is not modelled"); the sim cell's G2 holds it by friction, as the real one will.
+
+**Grip in the sim cell (measured offline on the exported `g2.xml`).** One actuator closes both coupled fingers, so its force limit was shared: 15 N per pad at `grip_force` 30 N. Fixed in `add_gripper` (force limit 2 x grip_force, kp 2e4 so it saturates on a 10 mm peg), shipped as `rl-insert-sim` 0.2.1. The remaining slip is MuJoCo's soft friction: under a steady push the held peg creeps (~1.3 mm/s at 10 N, proportional to force) with no static hold. `noslip_iterations` 10 removes it (no creep to 40 N axial, 30 N sideways at the tip), but mujoco-sim keeps the world's own `<option>` (only `cone` and `impratio` come from model files), so the cell can't set it: a mujoco-sim feature request. The real G2's pads should hold statically, so the sim's slip is pessimistic; the guard is for the real arm's jams either way.
+
+Steps to success on 0.1.6: 20-53, median 26.
