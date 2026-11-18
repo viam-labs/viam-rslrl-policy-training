@@ -69,6 +69,7 @@ class PolicyController(Generic, EasyResource):
         )
         self.task = None
         self.state, self.reason, self.steps, self.overruns, self.last_obs = "idle", None, 0, 0, None
+        self.ticks = []  # per tick [start late, read, infer, act] ms, for status
 
     async def do_command(self, command, *, timeout=None, **kwargs):
         match command.get("command"):
@@ -79,6 +80,7 @@ class PolicyController(Generic, EasyResource):
                     raise RuntimeError("already running")
                 self.policy.reset()
                 self.state, self.reason, self.steps, self.overruns, self.last_obs = "running", None, 0, 0, None
+                self.ticks = []
                 self.task = asyncio.create_task(self.run())
                 return {"status": "running"}
             case "stop":
@@ -95,6 +97,7 @@ class PolicyController(Generic, EasyResource):
                     "steps": self.steps,
                     "overruns": self.overruns,
                     "last_obs": self.last_obs,
+                    "ticks_ms": self.ticks[-40:],
                 }
             case "pre_insert_pose":
                 # Flange pose in the ARM BASE frame: the caller builds a PoseInFrame with the arm's frame name.
@@ -106,6 +109,7 @@ class PolicyController(Generic, EasyResource):
     async def run(self):
         """Fails the episode with a reason (stream cancelled, arm stopped) or succeeds (stream half-closed)."""
         dt, io = self.cfg["control"]["policy_dt"], self.cfg["model"]
+        self.ticks = []
         queue: asyncio.Queue = asyncio.Queue()
 
         async def batches():
@@ -131,7 +135,9 @@ class PolicyController(Generic, EasyResource):
                     raise RuntimeError("stream ended")
                 if time.monotonic() - t0 > self.timeout_s:
                     raise SafetyStop("timeout")
+                ts = time.monotonic()
                 q = np.radians((await self.arm.get_joint_positions()).values)
+                tr = time.monotonic()
                 if succeeded(self.policy.kin, self.cfg, q, self.hole):
                     queue.put_nowait(None)  # half-close; the arm settles on the last goal
                     try:
@@ -143,6 +149,8 @@ class PolicyController(Generic, EasyResource):
                 obs = self.policy.observe(q, self.hole)
                 self.last_obs = obs.tolist()
                 out = await self.mlmodel.infer({io["inputs"][0]["name"]: obs[None].astype(np.float32)})
+                ti = time.monotonic()
+                self.ticks.append([round(1000 * x, 1) for x in (ts - t0 - tick * dt, tr - ts, ti - tr)])
                 if time.monotonic() - t0 >= (tick + 1) * dt:  # this tick's window has started: drop it, skip ahead
                     self.overruns += 1
                     self.policy.q_prev = q  # joint_vel stays a one-tick difference
@@ -151,6 +159,7 @@ class PolicyController(Generic, EasyResource):
                     tick = int((time.monotonic() - t0) / dt) + 1
                     continue
                 goal = self.policy.act(q, self.hole, np.asarray(out[io["outputs"][0]["name"]])[0])
+                self.ticks[-1].append(round(1000 * (time.monotonic() - ti), 1))
                 times = point_times(tick, dt)
                 queue.put_nowait(
                     [Arm.TrajectoryPoint(timedelta(seconds=t), np.degrees(p).tolist()) for t, p in zip(times, ramp(prev_goal, goal))]
