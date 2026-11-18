@@ -16,7 +16,7 @@ from viam.utils import dict_to_struct
 from model.package import control_contract
 from policy_controller.core import Kinematics, Policy
 from policy_controller.service import PolicyController
-from policy_controller.stream import nominal_tip, orientation_vector, point_times, pre_insert, succeeded
+from policy_controller.stream import nominal_tip, orientation_vector, point_times, pre_insert, slip_or_jam, succeeded
 from rl_insert.robot import kinematics_spec
 from rl_insert.task import TaskParams, peg_insert_env_cfg
 
@@ -27,7 +27,7 @@ def kin_cfg(tmp_path_factory):
     path.write_text(kinematics_spec().to_xml())
     cfg = control_contract(peg_insert_env_cfg(TaskParams(), play=True))
     cfg["model"] = {"inputs": [{"name": "obs"}], "outputs": [{"name": "actions"}]}
-    cfg["robustness"] = {"hole_bias_m": list(TaskParams().hole_bias)}  # build_config adds the rest
+    cfg["robustness"] = {"hole_bias_m": list(TaskParams().hole_bias), "grasp_offset_m": TaskParams().grasp_offset}  # build_config adds the rest
     cfg["observation"] = {"terms": [{"name": n} for n in ("tip_rel_est_hole", "ee_rot6d", "joint_pos", "joint_vel", "last_action", "ik_error")]}  # build_config adds the real ones
     return Kinematics(path, cfg["control"]), cfg
 
@@ -80,7 +80,7 @@ def controller(kin_cfg, hole, action):
     kin, cfg = kin_cfg
     c = PolicyController.__new__(PolicyController)
     q = np.array(cfg["control"]["default_joint_pos"])
-    c.cfg, c.timeout_s, c.max_overruns = cfg, 10, 3
+    c.cfg, c.timeout_s, c.max_overruns, c.jam_s = cfg, 10, 3, 2.0
     c.hole = c.hole_cfg = np.array(hole)
     c.policy = Policy(cfg, kin)
     c.arm, c.mlmodel = FakeArm(np.degrees(q).tolist()), FakeModel(action)
@@ -180,3 +180,15 @@ def test_success_allows_for_the_hole_estimate_error(kin_cfg):
     assert succeeded(kin, cfg, q, tip + [0.0019, 0.0, 0.0142])
     assert not succeeded(kin, cfg, q, tip + [0.0, 0.0, 0.0135])  # too shallow even for the worst-case error
     assert not succeeded(kin, cfg, q, tip + [0.004, 0.0, 0.016])  # off the axis by more than error + tolerance
+
+
+def test_slip_and_jam(kin_cfg):
+    kin, cfg = kin_cfg
+    cfg = {**cfg, "robustness": {"hole_bias_m": [0.002, 0.002, 0.001], "grasp_offset_m": 0.003},
+           "task": {**cfg["task"], "peg_hole": {**cfg["task"].get("peg_hole", {}), "depth": 0.02}}}
+    q = np.array(cfg["control"]["default_joint_pos"])
+    tip = nominal_tip(kin, cfg, q)
+    assert slip_or_jam(kin, cfg, q, tip + [0, 0, 0.025], 0.0, 2.0) == ("slip", True)  # 25 mm: past 20 + 1 + 3
+    assert slip_or_jam(kin, cfg, q, tip + [0, 0, 0.010], 1.0, 2.0) == (None, True)
+    assert slip_or_jam(kin, cfg, q, tip + [0, 0, 0.010], 2.5, 2.0) == ("jam", True)
+    assert slip_or_jam(kin, cfg, q, tip - [0, 0, 0.010], 9.0, 2.0) == (None, False)  # above the mouth

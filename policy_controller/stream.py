@@ -69,3 +69,18 @@ def pre_insert(kin, cfg, hole_m, height_m=0.015):
         zip(["o_x", "o_y", "o_z"], o.tolist()), theta=float(np.degrees(theta))
     )
     return q, pose
+
+
+def slip_or_jam(kin, cfg, q, hole_m, in_hole_s, jam_s):
+    """Why to stop pushing, or None. The controller can't see the peg, only the arm's nominal tip:
+    - "slip": the nominal tip is deeper than the peg could be (hole depth + the hole-estimate error +
+      training's grasp offset along the tool), so the peg has slid up in the fingers;
+    - "jam": the tip has been in the hole (deeper than the estimate error) for jam_s without succeeding.
+    Returns (reason or None, in_hole): in_hole tells the caller whether to keep the in-hole clock running."""
+    rel = nominal_tip(kin, cfg, q) - hole_m
+    bias, grasp = np.asarray(cfg["robustness"]["hole_bias_m"]), cfg["robustness"]["grasp_offset_m"]
+    depth = -rel[2]
+    if depth > cfg["task"]["peg_hole"]["depth"] + bias[2] + grasp:
+        return "slip", True
+    in_hole = depth > bias[2] + 0.002
+    return ("jam" if in_hole and in_hole_s > jam_s else None), in_hole

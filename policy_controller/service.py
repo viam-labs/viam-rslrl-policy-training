@@ -17,7 +17,7 @@ from viam.services.mlmodel import MLModel
 from viam.utils import struct_to_dict
 
 from policy_controller.core import Kinematics, Policy, SafetyStop
-from policy_controller.stream import point_times, pre_insert, ramp, succeeded
+from policy_controller.stream import point_times, pre_insert, ramp, slip_or_jam, succeeded
 
 LIMIT_KEYS = ("action_clip", "max_step_mm", "max_joint_step_deg", "workspace_mm")
 
@@ -62,6 +62,7 @@ class PolicyController(Generic, EasyResource):
         self.mlmodel = dependencies[MLModel.get_resource_name(attrs["mlmodel"])]
         self.hole_cfg = self.hole = np.array(attrs["hole_mouth_mm"], float) / 1000
         self.timeout_s, self.max_overruns = float(attrs.get("timeout_s", 10)), int(attrs.get("max_overruns", 3))
+        self.jam_s = float(attrs.get("jam_s", 2.0))  # in the hole this long without success: stop pushing
         self.policy = Policy(
             self.cfg,
             Kinematics(pkg / "kinematics.xml", self.cfg["control"]),
@@ -134,6 +135,7 @@ class PolicyController(Generic, EasyResource):
             stream = asyncio.create_task(consume())
             t0 = time.monotonic()  # the stream anchor is set server-side a little later: our times run early, the safe side
             tick = late_run = 0
+            in_hole_t = None  # when the tip went into the hole (monotonic s)
             while True:
                 await asyncio.sleep(max(0.0, t0 + tick * dt - time.monotonic()))
                 if stream.done():
@@ -152,6 +154,10 @@ class PolicyController(Generic, EasyResource):
                         raise SafetyStop("settle_timeout")
                     self.state = "succeeded"
                     return
+                reason, in_hole = slip_or_jam(self.policy.kin, self.cfg, q, self.hole, ts - (in_hole_t or ts), self.jam_s)
+                if reason:
+                    raise SafetyStop(reason)
+                in_hole_t = (in_hole_t or ts) if in_hole else None
                 obs = self.policy.observe(q, self.hole)
                 self.last_obs = obs.tolist()
                 out = await self.mlmodel.infer({io["inputs"][0]["name"]: obs[None].astype(np.float32)})
