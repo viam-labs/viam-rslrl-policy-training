@@ -319,7 +319,15 @@ Training never clips actions (`config.json` `action.clip: null`), so the caps mu
 The SDK contract: `TrajectoryPoint.time` is from the start of the motion, strictly increasing, first point 0, positions in degrees. mujoco-sim's docs say "follows timestamped points in sim time; each batch plays straight after the last", which could mean per-batch times. The xArm module sends each point at anchor + time and skips the first point.
 
 - [ ] Ask the user to start the rl-insert simulation (it's billed). Then a scratch script (scratchpad, not the repo) connects with the machine's API key, resets the cell (world `reset`), opens one `move_through_joint_positions_streamed` stream, sends batch 1 = points at 0, 50, 100 ms moving joint 6 by +2 degrees, waits 300 ms, sends batch 2 = points at 150, 200 ms (absolute) moving it back, and samples `get_joint_positions` every 20 ms.
-- [ ] Record in this plan file which interpretation holds (absolute from stream start, or relative per batch), and how late batches behave. Task 8 implements the one that holds. Ask before stopping the sim.
+- [x] Record in this plan file which interpretation holds (absolute from stream start, or relative per batch), and how late batches behave. Task 8 implements the one that holds. Ask before stopping the sim.
+
+**Result (2026-11-18, mujoco-sim 0.16.1, scratchpad `stream_probe.py`).** Neither pure reading holds. Times are one timeline across batches (the sim interpolates linearly from each point to the next, the step taking the difference of their times), but that timeline does not run while the stream is starved: a batch that arrives after the last point has played starts *now*, from the last point, and plays at its own time offsets from that point.
+- Batch 1 (0/50/100 ms, j6 +2 deg): j6 reached +2.00 by 0.178 s (latency included).
+- Batch 2 sent at 0.301 s, times 150/200: back to 0 by 0.385 s. Absolute would also play it at once; per-batch-relative from its arrival would wait until ~0.45 s.
+- Batch 3 sent at 1.001 s, times 1500/1600: moved *at once* and slowly, 0.08 deg at 1.055 s to 1.97 deg at 2.285 s, i.e. over the 1.3 s from the previous last point (200 ms) to 1500 ms. Absolute would wait until 1.5 s; per-batch would start at 2.5 s.
+- One empty `TrajectoryUpdate` per batch, on arrival.
+
+For the controller: streaming one tick ahead never starves the queue, so stream-absolute times (Task 8's `point_times`) are what the sim plays, one tick behind the tick that sent them. A late tick that starves the queue does not jump: the next batch plays from the last point over the time gap, i.e. the ramp just stretches, and the timeline after that runs late by the starved time (the stream-absolute anchor drifts). Overruns therefore cost latency on the sim rather than a jump; keep `max_overruns` small. The xArm's driver (anchor + time, late points sent at once) is a different behaviour; re-probe on the real arm.
 
 ---
 

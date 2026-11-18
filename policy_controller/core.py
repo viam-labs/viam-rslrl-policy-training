@@ -99,8 +99,11 @@ class Kinematics:
         return q + np.clip(dq, -ik["max_dq_rad"], ik["max_dq_rad"])
 
 
-# TODO(run 6): measured p99.9 (scripts/policy_envelope.py), then 2x rounded up. Training never clips, so these must not bind.
-DEFAULTS = {"action_clip": 10.0, "max_step_mm": 20.0, "max_joint_step_deg": 10.0, "workspace_mm": 30.0}
+# 2x the p99.9 of run 6's policy (rl-insert v6, iteration 850) in the training env, rounded up
+# (scripts/policy_envelope.py, 64 envs x 20 episodes, 35200 steps). Training never clips, so these must not bind:
+# |a| p99.9 per element [3.50 1.63 4.15 3.62 2.06 4.02], TCP move 9.45 mm, joint step 4.95 deg,
+# nominal tip to hole 20.45 mm.
+DEFAULTS = {"action_clip": 9.0, "max_step_mm": 19.0, "max_joint_step_deg": 10.0, "workspace_mm": 41.0}
 
 
 class SafetyStop(Exception):
