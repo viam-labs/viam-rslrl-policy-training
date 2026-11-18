@@ -97,3 +97,43 @@ class Kinematics:
         jtdx += wl2 * r_limit + wpost2 * (np.array(ik["posture_target"]) - q)
         dq = np.linalg.solve(jtj, jtdx)
         return q + np.clip(dq, -ik["max_dq_rad"], ik["max_dq_rad"])
+
+
+class Policy:
+    """Episode state and observation recipes (config.json observation.terms, env_cfg.OBS_DOC). One per episode stream."""
+
+    def __init__(self, config: dict, kinematics: Kinematics):
+        self.cfg, self.kin = config, kinematics
+        self.reset()
+
+    def reset(self):
+        self.q_prev = self.p_des = self.quat_des = None
+        self.last_action = np.zeros(self.cfg["action"]["dim"])
+
+    def observe(self, q, hole_mouth):
+        q = np.asarray(q, float)
+        ctl, dt = self.cfg["control"], self.cfg["control"]["policy_dt"]
+        pos, rot = self.kin.fk(q)
+        recipes = {
+            "tip_rel_est_hole": lambda: pos + rot[:, 2] * self.cfg["robot"]["nominal_tcp"]["protrusion_m"] - hole_mouth,
+            "ee_rot6d": lambda: rot[:, :2].T.reshape(6),
+            "joint_pos": lambda: q - ctl["default_joint_pos"],
+            "joint_vel": lambda: np.zeros(len(q)) if self.q_prev is None else (q - self.q_prev) / dt,
+            "last_action": lambda: self.last_action,
+            "ik_error": lambda: np.zeros(6)
+            if self.p_des is None
+            else np.concatenate(pose_error(pos, quat_from_mat(rot), self.p_des, self.quat_des)),
+        }
+        out = []
+        for term in self.cfg["observation"]["terms"]:
+            if term["name"] not in recipes:
+                raise ValueError(f"no recipe for observation term {term['name']}")
+            out.append(np.asarray(recipes[term["name"]](), float))
+        return np.concatenate(out)
+
+    def act(self, q, hole_mouth, action):
+        """q_goal for this step's raw action; records what the next observe() needs."""
+        q_goal = self.kin.step_goal(q, action, self.cfg["action"])
+        self.p_des, self.quat_des = self.kin.p_des, self.kin.quat_des
+        self.q_prev, self.last_action = np.asarray(q, float), np.asarray(action, float)
+        return q_goal
