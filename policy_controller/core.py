@@ -99,11 +99,24 @@ class Kinematics:
         return q + np.clip(dq, -ik["max_dq_rad"], ik["max_dq_rad"])
 
 
+# TODO(run 6): measured p99.9 (scripts/policy_envelope.py), then 2x rounded up. Training never clips, so these must not bind.
+DEFAULTS = {"action_clip": 10.0, "max_step_mm": 20.0, "max_joint_step_deg": 10.0, "workspace_mm": 30.0}
+
+
+class SafetyStop(Exception):
+    """The step must not be sent. reason: "workspace" or "non_finite"."""
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
 class Policy:
     """Episode state and observation recipes (config.json observation.terms, env_cfg.OBS_DOC). One per episode stream."""
 
-    def __init__(self, config: dict, kinematics: Kinematics):
+    def __init__(self, config: dict, kinematics: Kinematics, limits: dict | None = None):
         self.cfg, self.kin = config, kinematics
+        self.limits = DEFAULTS | (limits or {})
         self.reset()
 
     def reset(self):
@@ -136,8 +149,32 @@ class Policy:
         return np.concatenate(out)
 
     def act(self, q, hole_mouth, action):
-        """q_goal for this step's raw action; records what the next observe() needs."""
-        q_goal = self.kin.step_goal(q, action, self.cfg["action"])
-        self.p_des, self.quat_des = self.kin.p_des, self.kin.quat_des
-        self.q_prev, self.last_action = np.asarray(q, float), np.asarray(action, float)
+        """Safe q_goal for this step's raw action; records what the next observe() needs.
+
+        Order: clip the action; IK; scale dq so the TCP moves <= max_step_mm and every joint <= max_joint_step_deg;
+        clamp to joint limits; SafetyStop("workspace") if the goal's nominal tip leaves the box of half-size
+        workspace_mm around hole_mouth. last_action records the RAW action (before the clip), as training's action
+        manager does. Raises SafetyStop("non_finite") on a non-finite action or q."""
+        lim, q, action = self.limits, np.asarray(q, float), np.asarray(action, float)
+        if not (np.isfinite(q).all() and np.isfinite(action).all()):
+            raise SafetyStop("non_finite")
+        clip = lim["action_clip"]
+        q_goal = self.kin.step_goal(q, np.clip(action, -clip, clip), self.cfg["action"])
+        p_des, quat_des = self.kin.p_des, self.kin.quat_des
+        dq, p0 = q_goal - q, self.kin.fk(q)[0]
+        dq *= min(1.0, np.deg2rad(lim["max_joint_step_deg"]) / max(np.abs(dq).max(), 1e-12))
+        cap = lim["max_step_mm"] / 1000
+        for _ in range(10):  # the TCP move is not linear in dq: rescale until it is at the cap
+            move = np.linalg.norm(self.kin.fk(q + dq)[0] - p0)
+            if move <= cap * (1 + 1e-9):
+                break
+            dq *= cap / move
+        lower, upper = np.array(self.cfg["control"]["ik"]["joint_limits_rad"]).T
+        q_goal = np.clip(q + dq, lower, upper)
+        pos, rot = self.kin.fk(q_goal)
+        tip = pos + rot[:, 2] * self.cfg["robot"]["nominal_tcp"]["protrusion_m"]
+        if (np.abs(tip - hole_mouth) > lim["workspace_mm"] / 1000).any():
+            raise SafetyStop("workspace")
+        self.p_des, self.quat_des = p_des, quat_des
+        self.q_prev, self.last_action = q, action
         return q_goal

@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from model.package import control_contract
-from policy_controller.core import Kinematics, Policy
+from policy_controller.core import DEFAULTS, Kinematics, Policy
 from rl_insert.robot import kinematics_spec
 from rl_insert.task import mdp
 from rl_insert.task.checks import make_env
@@ -44,7 +44,8 @@ def test_observation_matches_training(tmp_path):
     dims = [d[0] for d in env.observation_manager.group_obs_term_dim["actor"]]
     config = cfg | {"observation": {"terms": [{"name": n, "dim": d} for n, d in zip(terms, dims, strict=True)]}}
     kin = Kinematics(tmp_path / "kinematics.xml", cfg["control"])
-    policies = [Policy(config, kin) for _ in range(4)]  # one Kinematics: act() follows observe() per env
+    off = dict.fromkeys(DEFAULTS, 1e6)  # random actions drift out of the safety envelope; parity is about the IK
+    policies = [Policy(config, kin, off) for _ in range(4)]  # one Kinematics: act() follows observe() per env
     term = env.action_manager.get_term("ee_delta")
     names = list(terms)
     offs = np.cumsum([0, *dims])
