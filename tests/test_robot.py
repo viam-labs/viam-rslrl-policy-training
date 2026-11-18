@@ -47,5 +47,5 @@ def test_kinematics_spec_matches_training_fk(tmp_path):
             d.qpos[m.joint(name).qposadr[0]] = v
         mujoco.mj_kinematics(m, d)
         out.append((d.site("tcp").xpos.copy(), d.site("tcp").xmat.copy()))
-    np.testing.assert_allclose(out[0][0], out[1][0], atol=1e-6)  # to_xml prints ~7 significant digits
-    np.testing.assert_allclose(out[0][1], out[1][1], atol=1e-6)  # to_xml prints ~7 significant digits
+    np.testing.assert_allclose(out[0][0], out[1][0], atol=1e-5)  # to_xml prints ~7 significant digits (rot error to 1.75e-6 over random poses)
+    np.testing.assert_allclose(out[0][1], out[1][1], atol=1e-5)  # to_xml prints ~7 significant digits (rot error to 1.75e-6 over random poses)

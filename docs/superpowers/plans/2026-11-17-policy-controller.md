@@ -202,7 +202,7 @@ def test_kinematics_spec_matches_training_fk():
 
 ```python
 "solve": "once per policy step, from the joints measured at the step",
-"interpolation": "joint target ramps linearly from the measured joints to q + dq over policy_dt",
+"interpolation": "joint target ramps linearly from the previous step's target (the measured joints on an episode's first step) to measured q + dq over policy_dt; IK is linearised at the measured joints",
 "kinematics_file": "kinematics.xml",
 "site": ik.frame_name,
 "posture_target": [default_q[j] for j in ARM_JOINTS],  # mjlab's default when posture_target is None

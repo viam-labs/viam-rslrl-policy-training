@@ -1,4 +1,4 @@
-"""The model package files beyond policy.onnx: config.json (the deploy contract) and model_metrics.json."""
+"""The model package files beyond policy.onnx: config.json (the deploy contract), model_metrics.json and kinematics.xml."""
 
 from __future__ import annotations
 
@@ -103,7 +103,7 @@ def build_config(onnx_path: Path, env_cfg: ManagerBasedRlEnvCfg, p: TaskParams, 
                 "method": "damped least squares, joint space: (J^T W J + damping^2 I) dq = J^T W e",
                 "frame": f"{ik.frame_type} {ik.frame_name}",
                 "solve": "once per policy step, from the joints measured at the step",
-                "interpolation": "joint target ramps linearly from the measured joints to q + dq over policy_dt",
+                "interpolation": "joint target ramps linearly from the previous step's target (the measured joints on an episode's first step) to measured q + dq over policy_dt; IK is linearised at the measured joints",
                 "kinematics_file": "kinematics.xml",
                 "site": ik.frame_name,
                 "posture_target": [default_q[j] for j in ARM_JOINTS],  # mjlab's default when posture_target is None
