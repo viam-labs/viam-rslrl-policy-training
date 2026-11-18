@@ -28,9 +28,13 @@ def nominal_tip(kin, cfg, q):
 
 
 def succeeded(kin, cfg, q, hole_m):
+    """Training's success (tip success_depth_m deep, within success_centred_m of the axis) judged against the
+    *estimated* hole, so both tolerances widen by the hole-estimate error training covered
+    (robustness.hole_bias_m). Worst case that is still 13 mm into the hole: it can't be anywhere else."""
     rel = nominal_tip(kin, cfg, q) - hole_m
-    task = cfg["task"]
-    return -rel[2] >= task["success_depth_m"] and np.linalg.norm(rel[:2]) <= task["success_centred_m"]
+    task, bias = cfg["task"], np.asarray(cfg["robustness"]["hole_bias_m"])
+    return (-rel[2] >= task["success_depth_m"] - bias[2]
+            and np.linalg.norm(rel[:2]) <= task["success_centred_m"] + np.linalg.norm(bias[:2]))
 
 
 def orientation_vector(rot):

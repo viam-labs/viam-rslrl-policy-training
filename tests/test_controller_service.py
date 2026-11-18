@@ -16,7 +16,7 @@ from viam.utils import dict_to_struct
 from model.package import control_contract
 from policy_controller.core import Kinematics, Policy
 from policy_controller.service import PolicyController
-from policy_controller.stream import nominal_tip, orientation_vector, point_times, pre_insert
+from policy_controller.stream import nominal_tip, orientation_vector, point_times, pre_insert, succeeded
 from rl_insert.robot import kinematics_spec
 from rl_insert.task import TaskParams, peg_insert_env_cfg
 
@@ -27,6 +27,7 @@ def kin_cfg(tmp_path_factory):
     path.write_text(kinematics_spec().to_xml())
     cfg = control_contract(peg_insert_env_cfg(TaskParams(), play=True))
     cfg["model"] = {"inputs": [{"name": "obs"}], "outputs": [{"name": "actions"}]}
+    cfg["robustness"] = {"hole_bias_m": list(TaskParams().hole_bias)}  # build_config adds the rest
     cfg["observation"] = {"terms": [{"name": n} for n in ("tip_rel_est_hole", "ee_rot6d", "joint_pos", "joint_vel", "last_action", "ik_error")]}  # build_config adds the real ones
     return Kinematics(path, cfg["control"]), cfg
 
@@ -169,3 +170,13 @@ def test_start_takes_a_per_episode_hole(kin_cfg):
     asyncio.run(go())
     np.testing.assert_allclose(c.hole, [0.401, -0.002, 0.0505])
     np.testing.assert_allclose(c.hole_cfg, [0.4, 0, 0.05])
+
+
+def test_success_allows_for_the_hole_estimate_error(kin_cfg):
+    kin, cfg = kin_cfg
+    q = np.array(cfg["control"]["default_joint_pos"])
+    tip = nominal_tip(kin, cfg, q)
+    # 14.2 mm below an estimate that is 1.9 mm off sideways: in, given training's 2/2/1 mm estimate error
+    assert succeeded(kin, cfg, q, tip + [0.0019, 0.0, 0.0142])
+    assert not succeeded(kin, cfg, q, tip + [0.0, 0.0, 0.0135])  # too shallow even for the worst-case error
+    assert not succeeded(kin, cfg, q, tip + [0.004, 0.0, 0.016])  # off the axis by more than error + tolerance

@@ -133,7 +133,7 @@ class PolicyController(Generic, EasyResource):
             queue.put_nowait([Arm.TrajectoryPoint(timedelta(0), np.degrees(q).tolist())])
             stream = asyncio.create_task(consume())
             t0 = time.monotonic()  # the stream anchor is set server-side a little later: our times run early, the safe side
-            tick = 0
+            tick = late_run = 0
             while True:
                 await asyncio.sleep(max(0.0, t0 + tick * dt - time.monotonic()))
                 if stream.done():
@@ -159,11 +159,13 @@ class PolicyController(Generic, EasyResource):
                 self.ticks.append([round(1000 * x, 1) for x in (ts - t0 - tick * dt, tr - ts, ti - tr)])
                 if time.monotonic() - t0 >= (tick + 1) * dt:  # this tick's window has started: drop it, skip ahead
                     self.overruns += 1
+                    late_run += 1
                     self.policy.q_prev = q  # joint_vel stays a one-tick difference
-                    if self.overruns > self.max_overruns:
+                    if late_run > self.max_overruns:  # consecutive: a lone late read only stretches one step
                         raise SafetyStop("overruns")
                     tick = int((time.monotonic() - t0) / dt) + 1
                     continue
+                late_run = 0
                 goal = self.policy.act(q, self.hole, np.asarray(out[io["outputs"][0]["name"]])[0])
                 self.ticks[-1].append(round(1000 * (time.monotonic() - ti), 1))
                 times = point_times(tick, dt)
