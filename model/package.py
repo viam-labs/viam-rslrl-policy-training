@@ -12,7 +12,7 @@ from tensorboard.backend.event_processing.event_accumulator import EventAccumula
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from rl_insert.peg_hole import PegHoleParams
-from rl_insert.robot import ARM_JOINTS, FLANGE, XARM6_URDF, ArmParams, GripperParams
+from rl_insert.robot import ARM_JOINTS, FLANGE, XARM6_URDF, ArmParams, GripperParams, kinematics_spec
 from rl_insert.task.env_cfg import OBS_DOC, TaskParams
 
 SCHEMA_VERSION = 1
@@ -70,6 +70,8 @@ def build_config(onnx_path: Path, env_cfg: ManagerBasedRlEnvCfg, p: TaskParams, 
     default_q = robot.init_state.joint_pos
     g, ph, arm = GripperParams(), PegHoleParams(clearance=p.clearance), ArmParams()
     events = env_cfg.events
+    kin = kinematics_spec().compile()  # jnt_range = the entity's soft limits at factor 1.0
+    joint_limits = [kin.joint(j).range.tolist() for j in ARM_JOINTS]
     return {
         "schema_version": SCHEMA_VERSION,
         "run_name": run_name,
@@ -100,7 +102,12 @@ def build_config(onnx_path: Path, env_cfg: ManagerBasedRlEnvCfg, p: TaskParams, 
             "ik": {
                 "method": "damped least squares, joint space: (J^T W J + damping^2 I) dq = J^T W e",
                 "frame": f"{ik.frame_type} {ik.frame_name}",
-                "solved_every_physics_step": True,
+                "solve": "once per policy step, from the joints measured at the step",
+                "interpolation": "joint target ramps linearly from the measured joints to q + dq over policy_dt",
+                "kinematics_file": "kinematics.xml",
+                "site": ik.frame_name,
+                "posture_target": [default_q[j] for j in ARM_JOINTS],  # mjlab's default when posture_target is None
+                "joint_limits_rad": joint_limits,
                 "damping": ik.damping,
                 "max_dq_rad": ik.max_dq,
                 "position_weight": ik.position_weight,
@@ -149,7 +156,6 @@ def build_config(onnx_path: Path, env_cfg: ManagerBasedRlEnvCfg, p: TaskParams, 
                 "hole orientation error (the hole is upright, zero yaw; bias is position only)",
                 "part dimension tolerances (clearance is fixed per run)",
                 "real grasp slip (the grasp is a compliant weld)",
-                "joint-target streaming: sim re-solves IK toward the desired pose every 1 ms",
             ],
         },
         "grasp_model": {

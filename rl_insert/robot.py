@@ -81,6 +81,19 @@ def add_gripper(spec: mujoco.MjSpec, g: GripperParams = GripperParams()) -> mujo
     return root
 
 
+def kinematics_spec() -> mujoco.MjSpec:
+    """The arm and gripper without meshes: FK and Jacobians only need the joint tree and the tcp site,
+    so a deploy controller can load this one XML with no asset files."""
+    spec = load_xarm6()
+    add_gripper(spec)
+    for g in list(spec.geoms):
+        if g.type == mujoco.mjtGeom.mjGEOM_MESH:
+            spec.delete(g)
+    for m in list(spec.meshes):
+        spec.delete(m)
+    return spec
+
+
 def _add_visual_mesh(spec: mujoco.MjSpec, body: mujoco.MjsBody, name: str, pos) -> None:
     spec.add_mesh(name=name, file=str(G2_MESHES / f"{name}.stl"))
     body.add_geom(name=f"{name}_visual", type=mujoco.mjtGeom.mjGEOM_MESH, meshname=name, pos=pos,

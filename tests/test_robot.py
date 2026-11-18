@@ -27,3 +27,25 @@ def test_gripper_adds_one_actuator_and_a_tcp():
     m = spec.compile()
     assert m.actuator(m.nu - 1).name == "gripper"
     assert m.site("tcp").id >= 0
+
+
+def test_kinematics_spec_matches_training_fk(tmp_path):
+    from rl_insert.robot import kinematics_spec
+
+    full = load_xarm6()
+    add_gripper(full)
+    full = full.compile()
+    path = tmp_path / "kinematics.xml"
+    path.write_text(kinematics_spec().to_xml())
+    kin = mujoco.MjModel.from_xml_path(str(path))  # loads on its own: no mesh files
+    assert kin.nmesh == 0
+    q = np.array([0.1, -0.3, -0.6, 0.2, 0.9, -0.4])
+    out = []
+    for m in (full, kin):
+        d = mujoco.MjData(m)
+        for name, v in zip(ARM_JOINTS, q):
+            d.qpos[m.joint(name).qposadr[0]] = v
+        mujoco.mj_kinematics(m, d)
+        out.append((d.site("tcp").xpos.copy(), d.site("tcp").xmat.copy()))
+    np.testing.assert_allclose(out[0][0], out[1][0], atol=1e-6)  # to_xml prints ~7 significant digits
+    np.testing.assert_allclose(out[0][1], out[1][1], atol=1e-6)  # to_xml prints ~7 significant digits

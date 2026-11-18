@@ -2,7 +2,7 @@
 
 Viam runs `python3 -m model.training --model_output_directory=... <dataset args> --key=value ...`.
 The dataset is a required placeholder and is ignored. Everything in the output directory except
-tmp/ becomes the model package: policy.onnx, config.json, checkpoint.pt, model_metrics.json.
+tmp/ becomes the model package: policy.onnx, config.json, checkpoint.pt, model_metrics.json, kinematics.xml.
 
 Modes:
 - train (default): train on one GPU (CPU when there is none), upload training videos to Viam Data
@@ -200,6 +200,7 @@ def set_visible_devices(cuda: bool) -> None:
 
 def write_package(out: Path, log_dir: Path, env_cfg, p, run_name: str) -> None:
     from model.package import build_config, build_metrics, write_json
+    from rl_insert.robot import kinematics_spec
 
     # The best checkpoint at full difficulty (PegInsertRunner.save), else the last one.
     best = log_dir / "best.json"
@@ -211,6 +212,7 @@ def write_package(out: Path, log_dir: Path, env_cfg, p, run_name: str) -> None:
         onnx_path = log_dir / f"{log_dir.name}.onnx"
         picked = {"iteration": int(ckpt.stem.split("_")[1]), "success_rate_ema": None, "why": "last (never saved at full difficulty)"}
     shutil.copy(onnx_path, out / "policy.onnx")
+    (out / "kinematics.xml").write_text(kinematics_spec().to_xml())  # the model the IK contract refers to
     shutil.copy(ckpt, out / "checkpoint.pt")
     config = build_config(out / "policy.onnx", env_cfg, p, run_name)
     config["checkpoint"] = picked
