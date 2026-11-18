@@ -1,0 +1,4 @@
+viam-sdk>=0.85
+mujoco==4.0.1
+numpy
+packaging  # viam.services.mlmodel imports it without declaring it (viam-sdk 0.85.2)

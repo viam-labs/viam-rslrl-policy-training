@@ -1,0 +1,15 @@
+{
+  "$schema": "https://dl.viam.dev/module.schema.json",
+  "module_id": "devrel:rl-policy",
+  "visibility": "private",
+  "url": "",
+  "description": "Runs an RSL-RL insertion policy (rl-insert ML model package) on an arm by streaming joint points.",
+  "models": [
+    {
+      "api": "rdk:service:generic",
+      "model": "devrel:rl-policy:controller",
+      "short_description": "20 Hz policy loop: observation, ONNX policy via an mlmodel service, IK, safety caps, streamed joint points."
+    }
+  ],
+  "entrypoint": "run.sh"
+}
