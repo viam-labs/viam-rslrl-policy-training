@@ -362,6 +362,11 @@ def peg_insert_env_cfg(p: TaskParams = TaskParams(), play: bool = False) -> Mana
             "force": RewardTermCfg(
                 func=mdp.force_over, weight=-0.05, params={"threshold": p.force_penalty_from}
             ),
+            # Excess force ends the episode, which alone cost only the shaping it forgoes: cheap next to a
+            # 40 success bonus, so run 3 kept ramming (24% of episodes). Half the bonus makes it a loss.
+            "excess_force": RewardTermCfg(
+                func=mdp.excess_force, weight=-success_weight / 2, params={"threshold": p.force_limit}
+            ),
         },
         terminations={
             "time_out": TerminationTermCfg(func=mj_term.time_out, time_out=True),
@@ -374,7 +379,7 @@ def peg_insert_env_cfg(p: TaskParams = TaskParams(), play: bool = False) -> Mana
         },
         curriculum={
             "difficulty": CurriculumTermCfg(
-                func=mdp.widen_on_success, params={"up": 0.8, "down": 0.3, "step": 0.05}
+                func=mdp.widen_on_success, params={"up": 0.7, "down": 0.3, "step": 0.05}  # 0.8 held run 3 at 0.3 all run (76%)
             ),
         },
         viewer=ViewerConfig(
