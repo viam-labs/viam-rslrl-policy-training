@@ -35,17 +35,20 @@
 ---
 
 ### Task 1: Get the controller onto armfarm15 (no motion)
-- [ ] Resolve open question 1. For (a): `meta.json` visibility `public_unlisted`, upload; `viam packages export` rl-insert v6 then `viam packages upload` it into hackathons as `rl-insert` v6.
+**Done 2026-11-18:** module `public_unlisted`; `rl-insert` v6 copied to hackathons; package, `policy-model` and `policy` (0.1.7) on armfarm15, idle; `pre_insert_pose` answers. Answers: (a), no F/T sensor, collision sensitivity 3 OK.
+- [x] Resolve open question 1. For (a): `meta.json` visibility `public_unlisted`, upload; `viam packages export` rl-insert v6 then `viam packages upload` it into hackathons as `rl-insert` v6.
 - [ ] With approval, add to armfarm15: the `rl-insert` package, `viam:onnx-cpu` + `policy-model` (`model_path` `${packages.ml_model.rl-insert}/policy.onnx`), `devrel:rl-policy` + `policy` (`arm`, `gripper`, `mlmodel`, `package_dir`, a placeholder `hole_mouth_mm` [400, 0, 50], `jam_s` 1, `timeout_s` 5). Not started.
 - [ ] Check: `status` idle; `pre_insert_pose` answers.
 
 ### Task 2: Kinematics parity with the real arm (read-only)
 Our `kinematics.xml` is training's xArm6 (viam-ufactory-xarm's URDF). The real arm may be a variant (the module picks `xarm6_1305.urdf` for arm-type 1305).
-- [ ] Read joints and `get_end_position` (flange pose, mm) at the current pose; compare with `Kinematics.fk` of the same joints, minus the TCP offset. Pass: < 0.5 mm, < 0.2 deg. A mismatch means a variant: get the arm-type, rebuild `kinematics.xml` from the matching URDF, and say whether training must be rerun (it must if the link lengths differ).
+**Result 2026-11-18** at joints (-19.9, -35.2, -69.9, 5.6, 114.7, -1.9) deg: our flange FK vs the driver's `GetEndPosition` 0.001 mm, 0.000 deg. Both are built from the same URDF, so this checks the model, not the hardware; Task 6 calibrates the hole in our FK at the insertion pose, so model error mostly cancels there.
+- [x] Read joints and `get_end_position` (flange pose, mm) at the current pose; compare with `Kinematics.fk` of the same joints, minus the TCP offset. Pass: < 0.5 mm, < 0.2 deg. A mismatch means a variant: get the arm-type, rebuild `kinematics.xml` from the matching URDF, and say whether training must be rerun (it must if the link lengths differ).
 - [ ] Repeat at 3 more poses the arm already holds during normal use (ask the user to leave it at them, or use teleop), not ones we command.
 
 ### Task 3: Latency (read-only)
-- [ ] Add a `benchmark` DoCommand to the controller: N joint reads + N infers with a zero observation, returns p50/p99/max ms. No motion.
+**Result 2026-11-18** (0.1.7, n 200): joint read p50 2.5 / p99 4.0 / max 5.3 ms; infer p50 2.1 / p99 3.5 / max 5.2 ms. Pass. Staleness check still to do (needs manual mode, Task 6).
+- [x] Add a `benchmark` DoCommand to the controller: N joint reads + N infers with a zero observation, returns p50/p99/max ms. No motion.
 - [ ] Run N = 200. Pass: joint read p99 < 20 ms, read + infer + act p99 < 35 ms (the sim's typical was 8 ms with 80 ms outliers). The driver says its status report is every 200 ms; check the joint read isn't that stale (read twice 10 ms apart while the arm is moved by hand in manual mode: values must change).
 
 ### Task 4: Streaming probe on the real arm (moves, ±2 deg on joint 6)
