@@ -28,7 +28,6 @@ from mjlab.envs.mdp import events as mj_events
 from mjlab.envs.mdp import observations as mj_obs
 from mjlab.envs.mdp import rewards as mj_rew
 from mjlab.envs.mdp import terminations as mj_term
-from mjlab.envs.mdp.actions import DifferentialIKActionCfg
 from mjlab.managers import ObservationGroupCfg, ObservationTermCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
 from mjlab.managers.event_manager import EventTermCfg
@@ -44,6 +43,7 @@ from mjlab.viewer import ViewerConfig
 
 from rl_insert.peg_hole import TIMESTEP, PegHoleParams, add_hole, add_peg
 from rl_insert.robot import ARM_JOINTS, GripperParams, add_gripper, load_xarm6
+from rl_insert.task.actions import StepIKActionCfg
 
 from . import mdp
 
@@ -294,7 +294,7 @@ def peg_insert_env_cfg(p: TaskParams = TaskParams(), play: bool = False) -> Mana
             "critic": ObservationGroupCfg(critic, enable_corruption=False),
         },
         actions={
-            "ee_delta": DifferentialIKActionCfg(
+            "ee_delta": StepIKActionCfg(
                 entity_name="robot",
                 actuator_names=ARM_JOINTS,
                 frame_type="site",
