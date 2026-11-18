@@ -8,7 +8,7 @@
     {
       "api": "rdk:service:generic",
       "model": "devrel:rl-policy:controller",
-      "short_description": "20 Hz policy loop: observation, ONNX policy via an mlmodel service, IK, safety caps, streamed joint points."
+      "short_description": "20 Hz policy loop: ONNX policy via mlmodel, IK, safety caps, streamed joint points."
     }
   ],
   "entrypoint": "run.sh"
