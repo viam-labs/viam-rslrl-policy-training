@@ -63,7 +63,7 @@ Our `kinematics.xml` is training's xArm6 (viam-ufactory-xarm's URDF). The real a
 ### Task 5: Fixture, peg and grip (hardware, the user)
 - [ ] Print `hardware/stl/hole_block_c0_35.stl` (policy's clearance) and `hole_block_c0_5.stl` (easier first contact), `peg.stl`; a riser so the mouth sits ~73 mm above the table (measure the table-to-base offset first). Fit-test with `fit_coupon.stl`.
 - [ ] Clamp the block near (400, 0) mm in the base frame, upright.
-- [ ] Grip: set G2 `gripper_force` so the pads squeeze ~30 N (training's `grip_force`); check the peg protrudes 40 mm past the pad centre (`protrusion_m`) and doesn't slip under a firm hand push along its axis.
+- [ ] Grip (2026-11-18: `gripper_force` 50 set explicitly as an armfarm15 fragment mod; G2 is rated 10-50 N over 1-100 %, so ~30 N if linear, unverified): set G2 `gripper_force` so the pads squeeze ~30 N (training's `grip_force`); check the peg protrudes 40 mm past the pad centre (`protrusion_m`) and doesn't slip under a firm hand push along its axis.
 
 ### Task 6: Calibrate the hole by touch-off (arm moved by hand)
 - [ ] With the peg gripped, manual mode, the user guides the peg into the hole until it seats on the floor (depth 20 mm). Read joints; `hole_mouth = nominal_tip + (0, 0, depth)`. Three times, re-gripping between; spread ≤ 0.3 mm or repeat. Also the tip's tilt from vertical at the seated pose (training's hole is upright; > 1 deg is out of distribution).
