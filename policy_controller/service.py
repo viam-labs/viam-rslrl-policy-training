@@ -63,6 +63,9 @@ class PolicyController(Generic, EasyResource):
         self.hole_cfg = self.hole = np.array(attrs["hole_mouth_mm"], float) / 1000
         self.timeout_s, self.max_overruns = float(attrs.get("timeout_s", 10)), int(attrs.get("max_overruns", 3))
         self.jam_s = float(attrs.get("jam_s", 2.0))  # in the hole this long without success: stop pushing
+        # Cap on any one robot call (joint read, infer, stop): a hung call must not stall the loop past its own
+        # timeout (armfarm15 2026-11-18: after an xArm C31 collision the loop sat in `running` until `stop`).
+        self.call_timeout_s = float(attrs.get("call_timeout_s", 1.0))
         self.policy = Policy(
             self.cfg,
             Kinematics(pkg / "kinematics.xml", self.cfg["control"]),
@@ -128,6 +131,12 @@ class PolicyController(Generic, EasyResource):
                 return pose | {"frame": "arm base", "joints_deg": np.degrees(q).tolist()}
         raise ValueError(f"unknown command {command.get('command')}")
 
+    async def _call(self, aw, what):
+        try:
+            return await asyncio.wait_for(aw, self.call_timeout_s)
+        except asyncio.TimeoutError:
+            raise SafetyStop(f"{what}_timeout") from None
+
     async def run(self):
         """Fails the episode with a reason (stream cancelled, arm stopped) or succeeds (stream half-closed)."""
         dt, io = self.cfg["control"]["policy_dt"], self.cfg["model"]
@@ -144,10 +153,11 @@ class PolicyController(Generic, EasyResource):
 
         stream = None
         try:
-            q = np.radians((await self.arm.get_joint_positions()).values)
+            q = np.radians((await self._call(self.arm.get_joint_positions(), "read")).values)
             prev_goal = q
             # Warm-up: the first infer after a (re)start is slow enough to overrun ticks (sim-to-sim, 2026-11-18).
-            await self.mlmodel.infer({io["inputs"][0]["name"]: self.policy.observe(q, self.hole)[None].astype(np.float32)})
+            obs = self.policy.observe(q, self.hole)[None].astype(np.float32)
+            await self._call(self.mlmodel.infer({io["inputs"][0]["name"]: obs}), "infer")
             self.policy.reset()  # observe() above recorded nothing, but start the episode clean
             queue.put_nowait([Arm.TrajectoryPoint(timedelta(0), np.degrees(q).tolist())])
             stream = asyncio.create_task(consume())
@@ -162,7 +172,7 @@ class PolicyController(Generic, EasyResource):
                 if time.monotonic() - t0 > self.timeout_s:
                     raise SafetyStop("timeout")
                 ts = time.monotonic()
-                q = np.radians((await self.arm.get_joint_positions()).values)
+                q = np.radians((await self._call(self.arm.get_joint_positions(), "read")).values)
                 tr = time.monotonic()
                 if succeeded(self.policy.kin, self.cfg, q, self.hole):
                     queue.put_nowait(None)  # half-close; the arm settles on the last goal
@@ -178,7 +188,7 @@ class PolicyController(Generic, EasyResource):
                 in_hole_t = (in_hole_t or ts) if in_hole else None
                 obs = self.policy.observe(q, self.hole)
                 self.last_obs = obs.tolist()
-                out = await self.mlmodel.infer({io["inputs"][0]["name"]: obs[None].astype(np.float32)})
+                out = await self._call(self.mlmodel.infer({io["inputs"][0]["name"]: obs[None].astype(np.float32)}), "infer")
                 ti = time.monotonic()
                 self.ticks.append([round(1000 * x, 1) for x in (ts - t0 - tick * dt, tr - ts, ti - tr)])
                 if time.monotonic() - t0 >= (tick + 1) * dt:  # this tick's window has started: drop it, skip ahead
@@ -198,10 +208,14 @@ class PolicyController(Generic, EasyResource):
                 )
                 prev_goal, self.steps, tick = goal, self.steps + 1, tick + 1
         except BaseException as e:  # failure or cancellation: kill the stream first so no queued points play out
+            if not isinstance(e, asyncio.CancelledError):  # report first: the cleanup below may hang on a faulted arm
+                self.state, self.reason = "failed", e.reason if isinstance(e, SafetyStop) else repr(e)
             if stream:
                 stream.cancel()
-                await asyncio.gather(stream, return_exceptions=True)
-            await self.arm.stop()
+                await asyncio.wait({stream}, timeout=self.call_timeout_s)
+            try:
+                await asyncio.wait_for(self.arm.stop(), self.call_timeout_s)
+            except asyncio.TimeoutError:
+                self.reason = f"{self.reason}; arm.stop timed out"
             if isinstance(e, asyncio.CancelledError):
                 raise
-            self.state, self.reason = "failed", e.reason if isinstance(e, SafetyStop) else repr(e)

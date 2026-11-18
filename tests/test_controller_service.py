@@ -52,8 +52,12 @@ def test_pre_insert_pose(kin_cfg):
 class FakeArm:
     def __init__(self, q_deg):
         self.q, self.batches, self.stopped = q_deg, [], 0
+        self.reads, self.hang_after, self.stop_hangs = 0, None, False
 
     async def get_joint_positions(self):
+        self.reads += 1
+        if self.hang_after is not None and self.reads > self.hang_after:
+            await asyncio.sleep(3600)  # a call that never returns (armfarm15 2026-11-18, after a C31 collision)
         return JointPositions(values=self.q)
 
     async def move_through_joint_positions_streamed(self, batches):
@@ -63,6 +67,8 @@ class FakeArm:
 
     async def stop(self):
         self.stopped += 1
+        if self.stop_hangs:
+            await asyncio.sleep(3600)
 
 
 class FakeModel:
@@ -80,7 +86,7 @@ def controller(kin_cfg, hole, action):
     kin, cfg = kin_cfg
     c = PolicyController.__new__(PolicyController)
     q = np.array(cfg["control"]["default_joint_pos"])
-    c.cfg, c.timeout_s, c.max_overruns, c.jam_s = cfg, 10, 3, 2.0
+    c.cfg, c.timeout_s, c.max_overruns, c.jam_s, c.call_timeout_s = cfg, 10, 3, 2.0, 0.2
     c.hole = c.hole_cfg = np.array(hole)
     c.policy = Policy(cfg, kin)
     c.arm, c.mlmodel = FakeArm(np.degrees(q).tolist()), FakeModel(action)
@@ -108,6 +114,20 @@ def test_loop_streams_ramped_points(kin_cfg):
     first, second = c.arm.batches[1], c.arm.batches[2]
     assert [p.time.total_seconds() for p in first] == pytest.approx(point_times(0, 0.05))
     assert second[0].time > first[-1].time
+
+
+def test_hung_joint_read_fails_the_episode(kin_cfg):
+    c = controller(kin_cfg, [0.4, 0, 0.05], np.array([0, 0, -1.0, 0, 0, 0]))
+    c.arm.hang_after = 5
+    asyncio.run(asyncio.wait_for(c.run(), 2))
+    assert (c.state, c.reason, c.arm.stopped) == ("failed", "read_timeout", 1)
+
+
+def test_hung_stop_still_reports_the_failure(kin_cfg):
+    c = controller(kin_cfg, [0.4, 0, 0.05], np.full(6, np.nan))
+    c.arm.stop_hangs = True
+    asyncio.run(asyncio.wait_for(c.run(), 2))
+    assert (c.state, c.reason) == ("failed", "non_finite; arm.stop timed out")
 
 
 def test_orientation_vector_roundtrip(kin_cfg):
