@@ -29,6 +29,10 @@ METRIC_TAGS = {
     "mean_reward": "Train/mean_reward",
     "mean_episode_length": "Train/mean_episode_length",
     "curriculum_difficulty": "Curriculum/difficulty",
+    # Where an iteration's time goes (s): sim stepping vs the PPO update. viam train logs can hang.
+    "collection_time_s": "Perf/collection_time",
+    "learning_time_s": "Perf/learning_time",
+    "steps_per_s": "Perf/total_fps",
 }
 MAX_METRIC_POINTS = 100
 
