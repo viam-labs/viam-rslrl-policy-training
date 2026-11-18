@@ -86,7 +86,8 @@ def controller(kin_cfg, hole, action):
     kin, cfg = kin_cfg
     c = PolicyController.__new__(PolicyController)
     q = np.array(cfg["control"]["default_joint_pos"])
-    c.cfg, c.timeout_s, c.max_overruns, c.jam_s, c.call_timeout_s = cfg, 10, 3, 2.0, 0.2
+    c.cfg, c.timeout_s, c.max_overruns, c.jam_s, c.call_timeout_s, c.stop_timeout_s = cfg, 10, 3, 2.0, 0.2, 0.3
+    c.task = None
     c.hole = c.hole_cfg = np.array(hole)
     c.policy = Policy(cfg, kin)
     c.arm, c.mlmodel = FakeArm(np.degrees(q).tolist()), FakeModel(action)
@@ -128,6 +129,19 @@ def test_hung_stop_still_reports_the_failure(kin_cfg):
     c.arm.stop_hangs = True
     asyncio.run(asyncio.wait_for(c.run(), 2))
     assert (c.state, c.reason) == ("failed", "non_finite; arm.stop timed out")
+
+
+def test_stop_command_returns_when_arm_stop_hangs(kin_cfg):
+    async def go():
+        c = controller(kin_cfg, [0.4, 0, 0.05], np.array([0, 0, -1.0, 0, 0, 0]))
+        c.task = asyncio.create_task(c.run())
+        await asyncio.sleep(0.2)
+        c.arm.stop_hangs = True
+        await asyncio.wait_for(c.do_command({"command": "stop"}), 2)
+        return c
+
+    c = asyncio.run(go())
+    assert (c.state, c.reason) == ("idle", "stopped; arm.stop timed out")
 
 
 def test_orientation_vector_roundtrip(kin_cfg):

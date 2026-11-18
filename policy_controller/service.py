@@ -66,6 +66,7 @@ class PolicyController(Generic, EasyResource):
         # Cap on any one robot call (joint read, infer, stop): a hung call must not stall the loop past its own
         # timeout (armfarm15 2026-11-18: after an xArm C31 collision the loop sat in `running` until `stop`).
         self.call_timeout_s = float(attrs.get("call_timeout_s", 1.0))
+        self.stop_timeout_s = float(attrs.get("stop_timeout_s", 5.0))
         self.policy = Policy(
             self.cfg,
             Kinematics(pkg / "kinematics.xml", self.cfg["control"]),
@@ -91,11 +92,11 @@ class PolicyController(Generic, EasyResource):
                 self.task = asyncio.create_task(self.run())
                 return {"status": "running"}
             case "stop":
-                was_running = self.state == "running"
-                await self._halt()
-                await self.arm.stop()
-                if was_running:
+                if self.state == "running":
                     self.state, self.reason = "idle", "stopped"
+                await self._halt()
+                if not await self._stop_arm():
+                    self.reason = f"{self.reason}; arm.stop timed out"
                 return {"status": "stopped"}
             case "status":
                 return {
@@ -130,6 +131,13 @@ class PolicyController(Generic, EasyResource):
                 q, pose = pre_insert(self.policy.kin, self.cfg, self.hole_cfg, (lo + hi) / 2)
                 return pose | {"frame": "arm base", "joints_deg": np.degrees(q).tolist()}
         raise ValueError(f"unknown command {command.get('command')}")
+
+    async def _stop_arm(self):
+        """Stop the arm; True if it returned within stop_timeout_s. Waits without cancelling the request: a
+        cancelled call also cancels Stop on the robot side, and a re-cancelled caller leaves the stop running."""
+        stop = asyncio.ensure_future(self.arm.stop())
+        done, _ = await asyncio.wait({stop}, timeout=self.stop_timeout_s)
+        return bool(done)
 
     async def _call(self, aw, what):
         try:
@@ -213,9 +221,7 @@ class PolicyController(Generic, EasyResource):
             if stream:
                 stream.cancel()
                 await asyncio.wait({stream}, timeout=self.call_timeout_s)
-            try:
-                await asyncio.wait_for(self.arm.stop(), self.call_timeout_s)
-            except asyncio.TimeoutError:
+            if not await self._stop_arm() and not isinstance(e, asyncio.CancelledError):
                 self.reason = f"{self.reason}; arm.stop timed out"
             if isinstance(e, asyncio.CancelledError):
                 raise
