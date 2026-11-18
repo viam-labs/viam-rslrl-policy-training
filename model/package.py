@@ -45,44 +45,16 @@ def _tensor_contract(value_info) -> dict:
     }
 
 
-def build_config(onnx_path: Path, env_cfg: ManagerBasedRlEnvCfg, p: TaskParams, run_name: str) -> dict:
-    model = onnx.load(onnx_path)
-    meta = {e.key: e.value for e in model.metadata_props}
-    names = meta["observation_names"].split(",")
-    dims = [round(float(d)) for d in meta["observation_dims"].split(",")]
-    actor = env_cfg.observations["actor"].terms
-    terms, offset = [], 0
-    for name, dim in zip(names, dims, strict=True):
-        noise = actor[name].noise
-        terms.append(
-            {
-                "name": name,
-                "offset": offset,
-                "dim": dim,
-                **OBS_DOC[name],
-                "train_noise": None if noise is None else [noise.n_min, noise.n_max],
-            }
-        )
-        offset += dim
-
+def control_contract(env_cfg: ManagerBasedRlEnvCfg, p: TaskParams | None = None) -> dict:
+    """The action, control, robot and task sections of config.json: what the controller reads."""
+    p = p or TaskParams()
     ik = env_cfg.actions["ee_delta"]
     robot = env_cfg.scene.entities["robot"]
     default_q = robot.init_state.joint_pos
     g, ph, arm = GripperParams(), PegHoleParams(clearance=p.clearance), ArmParams()
-    events = env_cfg.events
     kin = kinematics_spec().compile()  # jnt_range = the entity's soft limits at factor 1.0
     joint_limits = [kin.joint(j).range.tolist() for j in ARM_JOINTS]
     return {
-        "schema_version": SCHEMA_VERSION,
-        "run_name": run_name,
-        "model": {
-            "format": "onnx",
-            "opset": model.opset_import[0].version,
-            "inputs": [_tensor_contract(i) for i in model.graph.input],
-            "outputs": [_tensor_contract(o) for o in model.graph.output],
-            "obs_normalization": "inside the graph",
-        },
-        "observation": {"dim": offset, "terms": terms},
         "action": {
             "type": "ee_delta_hole_frame",
             "dim": 6,
@@ -139,6 +111,42 @@ def build_config(onnx_path: Path, env_cfg: ManagerBasedRlEnvCfg, p: TaskParams, 
             "time_limit_s": env_cfg.episode_length_s,
             "force_limit_n": p.force_limit,
         },
+    }
+
+
+def build_config(onnx_path: Path, env_cfg: ManagerBasedRlEnvCfg, p: TaskParams, run_name: str) -> dict:
+    model = onnx.load(onnx_path)
+    meta = {e.key: e.value for e in model.metadata_props}
+    names = meta["observation_names"].split(",")
+    dims = [round(float(d)) for d in meta["observation_dims"].split(",")]
+    actor = env_cfg.observations["actor"].terms
+    terms, offset = [], 0
+    for name, dim in zip(names, dims, strict=True):
+        noise = actor[name].noise
+        terms.append(
+            {
+                "name": name,
+                "offset": offset,
+                "dim": dim,
+                **OBS_DOC[name],
+                "train_noise": None if noise is None else [noise.n_min, noise.n_max],
+            }
+        )
+        offset += dim
+
+    g, events = GripperParams(), env_cfg.events
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "run_name": run_name,
+        "model": {
+            "format": "onnx",
+            "opset": model.opset_import[0].version,
+            "inputs": [_tensor_contract(i) for i in model.graph.input],
+            "outputs": [_tensor_contract(o) for o in model.graph.output],
+            "obs_normalization": "inside the graph",
+        },
+        "observation": {"dim": offset, "terms": terms},
+        **control_contract(env_cfg, p),
         "robustness": {
             "start_lateral_m": p.start_lateral,
             "hole_bias_m": list(p.hole_bias),
