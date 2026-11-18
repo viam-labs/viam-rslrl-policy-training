@@ -69,8 +69,8 @@ class Kinematics:
         mujoco.mj_comPos(self.model, self.data)  # mj_jacSite needs it
         return self.data.site_xpos[self.site].copy(), self.data.site_xmat[self.site].reshape(3, 3).copy()
 
-    def jac(self, q):
-        self.fk(q)
+    def jac(self):
+        """Site Jacobian (3x6 each) at the q of the last fk()."""
         jacp, jacr = np.zeros((3, self.model.nv)), np.zeros((3, self.model.nv))
         mujoco.mj_jacSite(self.model, self.data, jacp, jacr, self.site)
         return jacp[:, self.dofadr], jacr[:, self.dofadr]
@@ -85,7 +85,7 @@ class Kinematics:
         delta = np.concatenate([a[:3] * action_cfg["pos_scale_m"], a[3:] * action_cfg["rot_scale_rad"]])
         self.p_des, self.quat_des = apply_delta_pose(pos, quat, delta)
         pos_err, rot_err = pose_error(pos, quat, self.p_des, self.quat_des)
-        jacp, jacr = self.jac(q)
+        jacp, jacr = self.jac()
         wp2, wo2 = ik["position_weight"] ** 2, ik["orientation_weight"] ** 2
         jtj = wp2 * jacp.T @ jacp + wo2 * jacr.T @ jacr
         jtdx = wp2 * jacp.T @ pos_err + wo2 * jacr.T @ rot_err

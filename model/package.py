@@ -52,6 +52,10 @@ def control_contract(env_cfg: ManagerBasedRlEnvCfg, p: TaskParams | None = None)
     robot = env_cfg.scene.entities["robot"]
     default_q = robot.init_state.joint_pos
     g, ph, arm = GripperParams(), PegHoleParams(clearance=p.clearance), ArmParams()
+    assert ik.posture_target is None, "the contract derives posture_target assuming the action cfg's is None"
+    assert robot.articulation.soft_joint_pos_limit_factor == 1.0, (
+        "the contract derives joint_limits_rad assuming soft_joint_pos_limit_factor == 1.0"
+    )
     kin = kinematics_spec().compile()  # jnt_range = the entity's soft limits at factor 1.0
     joint_limits = [kin.joint(j).range.tolist() for j in ARM_JOINTS]
     return {
@@ -59,9 +63,10 @@ def control_contract(env_cfg: ManagerBasedRlEnvCfg, p: TaskParams | None = None)
             "type": "ee_delta_hole_frame",
             "dim": 6,
             "layout": "[dx, dy, dz, rx, ry, rz]: translation and axis-angle rotation of the TCP",
-            "frame": "hole frame axes (origin at the mouth, +z out of the surface, insertion is -z). "
-            "Rotate into the arm base frame before use. Applied to the measured TCP pose each "
-            "step (target = FK(measured) + delta), rotation pre-multiplied: R_target = R_delta R_tcp.",
+            "frame": "arm base frame axes (training's world frame). Training's hole is upright with zero yaw, "
+            "so these are also the hole frame's axes; a yawed hole is out of distribution (see "
+            "robustness.not_modelled), not something to rotate away. Applied to the measured TCP pose "
+            "each step (p_target = p_tcp + d), rotation pre-multiplied in base axes: R_target = R_delta R_tcp.",
             "pos_scale_m": ik.delta_pos_scale,
             "rot_scale_rad": ik.delta_ori_scale,
             "clip": None,

@@ -2,8 +2,8 @@
 
 Frames: the robot base is the world frame (one robot per Warp world, all at the origin). The hole
 is upright with zero yaw, so the hole frame is the world frame translated to the mouth: vectors
-"in the hole frame" here are world vectors. The deploy side must rotate actions and observations
-between its measured hole frame and the arm base frame.
+"in the hole frame" here are world vectors. Only if the hole is ever not upright/zero-yaw,
+which training does not cover, would the deploy side need to rotate actions and observations.
 """
 
 from __future__ import annotations
