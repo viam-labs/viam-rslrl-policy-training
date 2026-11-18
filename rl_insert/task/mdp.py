@@ -62,6 +62,7 @@ class InsertState:
         self.difficulty = p["difficulty_init"]  # scales lateral start offset and hole bias, 0..1
         self.succ = torch.zeros((), device=dev)  # successes among resets in the current curriculum window
         self.done = 0  # resets in the current window
+        self.rate = 0.0  # success rate of the last completed window (scales the excess-force penalty)
         robot = env.scene["robot"]
         self.tcp_gid = int(robot.indexing.site_ids[robot.find_sites("tcp")[0][0]])
         self.flip = FLIP.to(dev)
@@ -300,6 +301,16 @@ def excess_force(env: ManagerBasedRlEnv, threshold: float) -> torch.Tensor:
     return peg_hole_force(env).norm(dim=-1) > threshold
 
 
+def excess_force_penalty(env: ManagerBasedRlEnv, threshold: float) -> torch.Tensor:
+    """excess_force scaled by the recent success rate (InsertState.rate, 0 until a window completes).
+
+    At full weight from the start, runs 4 and 5 learned to hover at the mouth and never found
+    success: before any success, pushing was all risk. Scaled, the penalty only bites once success
+    is something the policy is giving up by ramming.
+    """
+    return excess_force(env, threshold).float() * state(env).rate
+
+
 def gripper_hit(env: ManagerBasedRlEnv, sensor_name: str = "gripper_hole_contact") -> torch.Tensor:
     """Palm or a finger touched the fixture."""
     return (env.scene[sensor_name].data.found > 0).any(dim=-1)
@@ -322,7 +333,7 @@ def widen_on_success(env: ManagerBasedRlEnv, env_ids, up: float, down: float, st
         s.succ += env.termination_manager.get_term("success")[env_ids].float().sum()
         s.done += len(env_ids)
         if s.done >= env.num_envs:
-            rate = s.succ.item() / s.done
+            rate = s.rate = s.succ.item() / s.done
             if rate > up:
                 s.difficulty = min(1.0, s.difficulty + step)
             elif rate < down:

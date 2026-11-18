@@ -16,6 +16,7 @@ def make(n=10, difficulty=0.5):
     s.difficulty = difficulty
     s.succ = torch.zeros((), device="cpu")
     s.done = 0
+    s.rate = 0.0
     env = SimpleNamespace(
         num_envs=n,
         device="cpu",
@@ -55,3 +56,12 @@ def test_falls_but_not_below_init():
     assert abs(s.difficulty - 0.3) < 1e-9
     call(env, list(range(10)))
     assert abs(s.difficulty - 0.3) < 1e-9
+
+
+def test_window_rate_scales_excess_force_penalty(monkeypatch):
+    env, s, succ = make()
+    succ[:4] = True
+    call(env, list(range(10)))
+    assert abs(s.rate - 0.4) < 1e-9
+    monkeypatch.setattr(mdp, "excess_force", lambda env, threshold: torch.tensor([True, False]))
+    assert torch.allclose(mdp.excess_force_penalty(env, 40.0), torch.tensor([0.4, 0.0]))

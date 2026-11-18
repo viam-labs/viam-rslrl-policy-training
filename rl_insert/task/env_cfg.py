@@ -363,9 +363,10 @@ def peg_insert_env_cfg(p: TaskParams = TaskParams(), play: bool = False) -> Mana
                 func=mdp.force_over, weight=-0.05, params={"threshold": p.force_penalty_from}
             ),
             # Excess force ends the episode, which alone cost only the shaping it forgoes: cheap next to a
-            # 40 success bonus, so run 3 kept ramming (24% of episodes). Half the bonus makes it a loss.
+            # 40 success bonus, so run 3 kept ramming (24% of episodes). Half the bonus makes it a loss,
+            # scaled by the recent success rate so it can't scare off exploration (runs 4 and 5 did).
             "excess_force": RewardTermCfg(
-                func=mdp.excess_force, weight=-success_weight / 2, params={"threshold": p.force_limit}
+                func=mdp.excess_force_penalty, weight=-success_weight / 2, params={"threshold": p.force_limit}
             ),
         },
         terminations={
