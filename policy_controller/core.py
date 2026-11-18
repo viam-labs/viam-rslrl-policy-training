@@ -77,7 +77,7 @@ class Kinematics:
 
     def step_goal(self, q, a, action_cfg):
         """Joint goal q + dq: one DLS step at the measured q towards the pose the action asks for."""
-        c, ik = self.ctl, self.ctl["ik"]
+        ik = self.ctl["ik"]
         q = np.asarray(q, float)
         pos, rot = self.fk(q)
         quat = quat_from_mat(rot)
