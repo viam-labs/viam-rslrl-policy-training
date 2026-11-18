@@ -44,3 +44,23 @@ def test_first_step_after_reset_starts_at_measured_joints():
     q = env.scene["robot"].data.joint_pos[:, term._joint_ids].clone()
     env.step(torch.zeros(4, 6))
     torch.testing.assert_close(term._q_from, q)
+
+
+def test_target_ramps_linearly_over_the_step():
+    env = make_env(num_envs=4, device="cpu")
+    env.reset()
+    term = env.action_manager.get_term("ee_delta")
+    target = env.scene["robot"].data.joint_pos_target
+    apply = term.apply_actions
+    seen = {}
+
+    def spy():
+        apply()
+        seen[term._k] = target[:, term._joint_ids].clone()
+
+    term.apply_actions = spy
+    env.step(torch.full((4, 6), 0.5))
+    n = env.cfg.decimation
+    for k in (1, n // 2):
+        want = term._q_from + (k / n) * (term._q_to - term._q_from)
+        torch.testing.assert_close(seen[k], want)
