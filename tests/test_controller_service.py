@@ -192,3 +192,10 @@ def test_slip_and_jam(kin_cfg):
     assert slip_or_jam(kin, cfg, q, tip + [0, 0, 0.010], 1.0, 2.0) == (None, True)
     assert slip_or_jam(kin, cfg, q, tip + [0, 0, 0.010], 2.5, 2.0) == ("jam", True)
     assert slip_or_jam(kin, cfg, q, tip - [0, 0, 0.010], 9.0, 2.0) == (None, False)  # above the mouth
+
+
+def test_benchmark_reads_and_infers_without_moving(kin_cfg):
+    c = controller(kin_cfg, [0.4, 0, 0.05], np.zeros(6))
+    c.state = "idle"
+    out = asyncio.run(c.do_command({"command": "benchmark", "n": 5}))
+    assert out["n"] == 5 and set(out["joint_read_ms"]) == {"p50", "p99", "max"} and c.arm.stopped == 0

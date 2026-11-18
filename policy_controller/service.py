@@ -103,6 +103,24 @@ class PolicyController(Generic, EasyResource):
                     "last_obs": self.last_obs,
                     "ticks_ms": self.ticks[-40:],
                 }
+            case "benchmark":
+                # Read-only latency check: n joint reads and n infers (on the current joints), no motion.
+                if self.state == "running":
+                    raise RuntimeError("running")
+                n, io = int(command.get("n", 100)), self.cfg["model"]
+                read, infer = [], []
+                for _ in range(n):
+                    t = time.monotonic()
+                    q = np.radians((await self.arm.get_joint_positions()).values)
+                    read.append(time.monotonic() - t)
+                    obs = self.policy.observe(q, self.hole)[None].astype(np.float32)
+                    t = time.monotonic()
+                    await self.mlmodel.infer({io["inputs"][0]["name"]: obs})
+                    infer.append(time.monotonic() - t)
+                self.policy.reset()
+                stats = lambda x: {k: round(1000 * float(v), 2) for k, v in  # noqa: E731
+                                   zip(("p50", "p99", "max"), np.percentile(x, [50, 99, 100]))}
+                return {"n": n, "joint_read_ms": stats(read), "infer_ms": stats(infer)}
             case "pre_insert_pose":
                 # Flange pose in the ARM BASE frame: the caller builds a PoseInFrame with the arm's frame name.
                 lo, hi = self.cfg["task"]["pre_insert_tip_height_m"]
