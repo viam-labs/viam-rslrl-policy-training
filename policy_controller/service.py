@@ -35,7 +35,25 @@ class PolicyController(Generic, EasyResource):
             raise ValueError("hole_mouth_mm must be [x, y, z]")
         return [attrs["arm"], attrs["gripper"], attrs["mlmodel"]], []
 
+    @classmethod
+    def new(cls, config, dependencies):
+        # viam-sdk 0.85's EasyResource.new only sets the name; the module's reconfigure is remove + new.
+        self = super().new(config, dependencies)
+        self.reconfigure(config, dependencies)
+        return self
+
+    async def _halt(self):
+        """Cancel a running loop (run() cancels the stream and stops the arm) and wait for it."""
+        if self.task and not self.task.done():
+            self.task.cancel()
+            await asyncio.gather(self.task, return_exceptions=True)
+
+    async def close(self):
+        await self._halt()
+
     def reconfigure(self, config, dependencies):
+        if getattr(self, "task", None) and not self.task.done():
+            self.task.cancel()  # run()'s cancel path stops the stream and the arm
         attrs = struct_to_dict(config.attributes)
         pkg = Path(attrs["package_dir"])
         self.cfg = json.loads((pkg / "config.json").read_text())
@@ -55,6 +73,8 @@ class PolicyController(Generic, EasyResource):
     async def do_command(self, command, *, timeout=None, **kwargs):
         match command.get("command"):
             case "start":
+                # TODO (plan decision: not now): require the gripper closed on the peg, and reject start states
+                # outside the trained start distribution (offset and tilt from the pre-insert pose).
                 if self.state == "running":
                     raise RuntimeError("already running")
                 self.policy.reset()
@@ -62,11 +82,11 @@ class PolicyController(Generic, EasyResource):
                 self.task = asyncio.create_task(self.run())
                 return {"status": "running"}
             case "stop":
-                if self.task:
-                    self.task.cancel()
-                    await asyncio.gather(self.task, return_exceptions=True)
+                was_running = self.state == "running"
+                await self._halt()
                 await self.arm.stop()
-                self.state, self.reason = "idle", "stopped"
+                if was_running:
+                    self.state, self.reason = "idle", "stopped"
                 return {"status": "stopped"}
             case "status":
                 return {
@@ -77,8 +97,10 @@ class PolicyController(Generic, EasyResource):
                     "last_obs": self.last_obs,
                 }
             case "pre_insert_pose":
-                q, pose = pre_insert(self.policy.kin, self.cfg, self.hole)
-                return pose | {"joints_deg": np.degrees(q).tolist()}
+                # Flange pose in the ARM BASE frame: the caller builds a PoseInFrame with the arm's frame name.
+                lo, hi = self.cfg["task"]["pre_insert_tip_height_m"]
+                q, pose = pre_insert(self.policy.kin, self.cfg, self.hole, (lo + hi) / 2)
+                return pose | {"frame": "arm base", "joints_deg": np.degrees(q).tolist()}
         raise ValueError(f"unknown command {command.get('command')}")
 
     async def run(self):
@@ -96,11 +118,11 @@ class PolicyController(Generic, EasyResource):
 
         stream = None
         try:
-            q = np.radians(await self.arm.get_joint_positions())
+            q = np.radians((await self.arm.get_joint_positions()).values)
             prev_goal = q
             queue.put_nowait([Arm.TrajectoryPoint(timedelta(0), np.degrees(q).tolist())])
             stream = asyncio.create_task(consume())
-            t0 = time.monotonic()
+            t0 = time.monotonic()  # the stream anchor is set server-side a little later: our times run early, the safe side
             tick = 0
             while True:
                 await asyncio.sleep(max(0.0, t0 + tick * dt - time.monotonic()))
@@ -109,10 +131,13 @@ class PolicyController(Generic, EasyResource):
                     raise RuntimeError("stream ended")
                 if time.monotonic() - t0 > self.timeout_s:
                     raise SafetyStop("timeout")
-                q = np.radians(await self.arm.get_joint_positions())
+                q = np.radians((await self.arm.get_joint_positions()).values)
                 if succeeded(self.policy.kin, self.cfg, q, self.hole):
                     queue.put_nowait(None)  # half-close; the arm settles on the last goal
-                    await stream
+                    try:
+                        await asyncio.wait_for(stream, 5)
+                    except asyncio.TimeoutError:
+                        raise SafetyStop("settle_timeout")
                     self.state = "succeeded"
                     return
                 obs = self.policy.observe(q, self.hole)
@@ -120,6 +145,7 @@ class PolicyController(Generic, EasyResource):
                 out = await self.mlmodel.infer({io["inputs"][0]["name"]: obs[None].astype(np.float32)})
                 if time.monotonic() - t0 >= (tick + 1) * dt:  # this tick's window has started: drop it, skip ahead
                     self.overruns += 1
+                    self.policy.q_prev = q  # joint_vel stays a one-tick difference
                     if self.overruns > self.max_overruns:
                         raise SafetyStop("overruns")
                     tick = int((time.monotonic() - t0) / dt) + 1
@@ -130,12 +156,11 @@ class PolicyController(Generic, EasyResource):
                     [Arm.TrajectoryPoint(timedelta(seconds=t), np.degrees(p).tolist()) for t, p in zip(times, ramp(prev_goal, goal))]
                 )
                 prev_goal, self.steps, tick = goal, self.steps + 1, tick + 1
-        except asyncio.CancelledError:
+        except BaseException as e:  # failure or cancellation: kill the stream first so no queued points play out
             if stream:
                 stream.cancel()
-            raise
-        except Exception as e:
-            self.state, self.reason = "failed", e.reason if isinstance(e, SafetyStop) else repr(e)
-            if stream:
-                stream.cancel()
+                await asyncio.gather(stream, return_exceptions=True)
             await self.arm.stop()
+            if isinstance(e, asyncio.CancelledError):
+                raise
+            self.state, self.reason = "failed", e.reason if isinstance(e, SafetyStop) else repr(e)

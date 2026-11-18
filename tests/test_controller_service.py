@@ -2,13 +2,21 @@
 
 import asyncio
 
+import json
+
 import numpy as np
 import pytest
+from viam.components.arm import Arm
+from viam.components.gripper import Gripper
+from viam.proto.app.robot import ComponentConfig
+from viam.proto.component.arm import JointPositions
+from viam.services.mlmodel import MLModel
+from viam.utils import dict_to_struct
 
 from model.package import control_contract
 from policy_controller.core import Kinematics, Policy
 from policy_controller.service import PolicyController
-from policy_controller.stream import nominal_tip, point_times, pre_insert
+from policy_controller.stream import nominal_tip, orientation_vector, point_times, pre_insert
 from rl_insert.robot import kinematics_spec
 from rl_insert.task import TaskParams, peg_insert_env_cfg
 
@@ -45,7 +53,7 @@ class FakeArm:
         self.q, self.batches, self.stopped = q_deg, [], 0
 
     async def get_joint_positions(self):
-        return self.q
+        return JointPositions(values=self.q)
 
     async def move_through_joint_positions_streamed(self, batches):
         async for b in batches:
@@ -60,7 +68,10 @@ class FakeModel:
     def __init__(self, action):
         self.action = action
 
+    delay = 0.0
+
     async def infer(self, tensors):
+        await asyncio.sleep(self.delay)
         return {"actions": np.array([self.action], np.float32)}
 
 
@@ -95,3 +106,52 @@ def test_loop_streams_ramped_points(kin_cfg):
     first, second = c.arm.batches[1], c.arm.batches[2]
     assert [p.time.total_seconds() for p in first] == pytest.approx(point_times(0, 0.05))
     assert second[0].time > first[-1].time
+
+
+def test_orientation_vector_roundtrip(kin_cfg):
+    kin, cfg = kin_cfg
+    q = np.array(cfg["control"]["default_joint_pos"]) + [0.3, 0.2, -0.1, 0.5, 0.4, 0.7]
+    rot = kin.fk(q)[1]
+    o, theta = orientation_vector(rot)
+    lon, lat = np.arctan2(o[1], o[0]), np.arccos(o[2])
+
+    def rz(a):
+        return np.array([[np.cos(a), -np.sin(a), 0], [np.sin(a), np.cos(a), 0], [0, 0, 1]])
+
+    ry = np.array([[np.cos(lat), 0, np.sin(lat)], [0, 1, 0], [-np.sin(lat), 0, np.cos(lat)]])
+    np.testing.assert_allclose((rz(lon) @ ry @ rz(theta))[:, 0], rot[:, 0], atol=1e-9)
+
+
+def test_overruns_fail(kin_cfg):
+    c = controller(kin_cfg, [0.4, 0, 0.05], np.zeros(6))
+    c.mlmodel.delay, c.max_overruns = 0.08, 1  # slower than the 50 ms tick
+    asyncio.run(c.run())
+    assert (c.state, c.reason, c.arm.stopped) == ("failed", "overruns", 1)
+
+
+def test_start_while_running_rejected_and_close_stops(kin_cfg):
+    async def go():
+        c = controller(kin_cfg, [0.4, 0, 0.05], np.zeros(6))
+        c.state = "idle"
+        assert await c.do_command({"command": "start"}) == {"status": "running"}
+        with pytest.raises(RuntimeError):
+            await c.do_command({"command": "start"})
+        await asyncio.sleep(0.15)
+        await c.close()
+        assert c.task.done() and c.arm.stopped == 1
+        return c
+
+    c = asyncio.run(go())
+    assert c.steps >= 1
+
+
+def test_new_configures(kin_cfg, tmp_path):
+    kin, cfg = kin_cfg
+    (tmp_path / "config.json").write_text(json.dumps(cfg))
+    (tmp_path / "kinematics.xml").write_text(kinematics_spec().to_xml())
+    attrs = {"arm": "a", "gripper": "g", "mlmodel": "m", "package_dir": str(tmp_path), "hole_mouth_mm": [400, 0, 50]}
+    conf = ComponentConfig(name="ctl", attributes=dict_to_struct(attrs))
+    assert PolicyController.validate_config(conf)[0] == ["a", "g", "m"]
+    deps = {Arm.get_resource_name("a"): FakeArm([0] * 6), Gripper.get_resource_name("g"): object(), MLModel.get_resource_name("m"): FakeModel(np.zeros(6))}
+    c = PolicyController.new(conf, deps)
+    assert c.state == "idle" and c.hole.tolist() == [0.4, 0, 0.05] and c.max_overruns == 3
