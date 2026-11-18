@@ -62,27 +62,49 @@ def test_hole_far_away_stops(cfg):
     assert e.value.reason == "workspace"
 
 
-@pytest.mark.parametrize("bad_q", [False, True])
-def test_non_finite_stops(cfg, bad_q):
-    q = np.array(cfg[0]["control"]["default_joint_pos"])
-    a = np.zeros(6)
-    (q if bad_q else a)[0] = np.nan
+@pytest.mark.parametrize("bad", ["q", "action", "hole"])
+def test_non_finite_stops(cfg, bad):
+    args = {"q": np.array(cfg[0]["control"]["default_joint_pos"]), "action": np.zeros(6), "hole": np.zeros(3)}
+    args[bad][0] = np.nan
     with pytest.raises(SafetyStop) as e:
-        make(cfg).act(q, np.zeros(3), a)
+        make(cfg).act(args["q"], args["hole"], args["action"])
     assert e.value.reason == "non_finite"
+
+
+def test_goal_stops_at_the_joint_limit(cfg):
+    q = np.array(cfg[0]["control"]["default_joint_pos"])
+    p = make(cfg, action_clip=1e6, workspace_mm=1e6, max_step_mm=1e3, max_joint_step_deg=90)
+    lower, upper = np.array(cfg[0]["control"]["ik"]["joint_limits_rad"]).T
+    q[3] = upper[3] - 1e-3  # next to its limit; a big rotation about the tool axis pushes joint 4 past it
+    goal = p.act(q, hole_at_tip(p, q), np.array([0, 0, 0, 0, 0, -100.0]))
+    assert (goal <= upper + 1e-12).all() and (goal >= lower - 1e-12).all()
+    assert goal[3] == pytest.approx(upper[3]) or goal[3] == pytest.approx(lower[3])
+    assert np.abs(goal - q).max() <= np.deg2rad(90) + 1e-12
+
+
+def test_stop_leaves_state_unchanged(cfg):
+    q = np.array(cfg[0]["control"]["default_joint_pos"])
+    p = make(cfg)
+    p.act(q, hole_at_tip(p, q), np.ones(6))
+    before = (p.last_action.copy(), p.q_prev.copy(), p.p_des.copy())
+    with pytest.raises(SafetyStop):
+        p.act(q + 0.01, hole_at_tip(p, q) + 0.1, np.full(6, 2.0))
+    for old, new in zip(before, (p.last_action, p.q_prev, p.p_des), strict=True):
+        np.testing.assert_array_equal(old, new)
 
 
 @pytest.mark.skipif("POLICY_ENVELOPE_NPZ" not in os.environ, reason="needs scripts/policy_envelope.py's npz")
 def test_no_cap_binds_on_the_recorded_rollout(cfg):
-    d = np.load(os.environ["POLICY_ENVELOPE_NPZ"])
-    p, binds = make(cfg), 0
-    n = len(d["action"])
-    for a, q, hole, first in zip(d["action"], d["q"], d["hole"], d["first"], strict=True):
-        if first:
-            p.reset()
-        raw = p.kin.step_goal(q, a, cfg[0]["action"])  # the unsafe goal
-        try:
-            binds += not np.allclose(p.act(q, hole, a), raw, atol=1e-12)
-        except SafetyStop:
-            binds += 1
-    assert binds <= 0.001 * n, f"{binds} of {n} steps bound a cap"
+    d = np.load(os.environ["POLICY_ENVELOPE_NPZ"])  # (steps, num_envs, ...)
+    steps, envs = d["action"].shape[:2]
+    policies, binds = [make(cfg) for _ in range(envs)], 0
+    for t in range(steps):
+        for i, p in enumerate(policies):
+            if d["first"][t, i]:
+                p.reset()
+            raw = p.kin.step_goal(d["q"][t, i], d["action"][t, i], cfg[0]["action"])  # the unsafe goal
+            try:
+                binds += not np.array_equal(p.act(d["q"][t, i], d["hole"][t, i], d["action"][t, i]), raw)
+            except SafetyStop:
+                binds += 1
+    assert binds <= 0.001 * steps * envs, f"{binds} of {steps * envs} steps bound a cap"

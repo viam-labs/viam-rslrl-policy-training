@@ -151,17 +151,20 @@ class Policy:
     def act(self, q, hole_mouth, action):
         """Safe q_goal for this step's raw action; records what the next observe() needs.
 
-        Order: clip the action; IK; scale dq so the TCP moves <= max_step_mm and every joint <= max_joint_step_deg;
-        clamp to joint limits; SafetyStop("workspace") if the goal's nominal tip leaves the box of half-size
-        workspace_mm around hole_mouth. last_action records the RAW action (before the clip), as training's action
-        manager does. Raises SafetyStop("non_finite") on a non-finite action or q."""
+        Order: clip the action; IK; clamp q + dq to joint_limits_rad; scale dq so every joint moves <=
+        max_joint_step_deg and the TCP <= max_step_mm (scaling towards q stays inside the limit box);
+        SafetyStop("workspace") if the goal's nominal tip leaves the box of half-size workspace_mm around hole_mouth.
+        last_action records the RAW action (before the clip), as training's action manager does. Raises
+        SafetyStop("non_finite") on a non-finite q, hole_mouth or action, SafetyStop("step") if the TCP cap
+        cannot be met."""
         lim, q, action = self.limits, np.asarray(q, float), np.asarray(action, float)
-        if not (np.isfinite(q).all() and np.isfinite(action).all()):
+        if not all(np.isfinite(x).all() for x in (q, np.asarray(hole_mouth, float), action)):
             raise SafetyStop("non_finite")
         clip = lim["action_clip"]
         q_goal = self.kin.step_goal(q, np.clip(action, -clip, clip), self.cfg["action"])
         p_des, quat_des = self.kin.p_des, self.kin.quat_des
-        dq, p0 = q_goal - q, self.kin.fk(q)[0]
+        lower, upper = np.array(self.cfg["control"]["ik"]["joint_limits_rad"]).T
+        dq, p0 = np.clip(q_goal, lower, upper) - q, self.kin.fk(q)[0]
         dq *= min(1.0, np.deg2rad(lim["max_joint_step_deg"]) / max(np.abs(dq).max(), 1e-12))
         cap = lim["max_step_mm"] / 1000
         for _ in range(10):  # the TCP move is not linear in dq: rescale until it is at the cap
@@ -169,12 +172,13 @@ class Policy:
             if move <= cap * (1 + 1e-9):
                 break
             dq *= cap / move
-        lower, upper = np.array(self.cfg["control"]["ik"]["joint_limits_rad"]).T
-        q_goal = np.clip(q + dq, lower, upper)
+        if move > cap * (1 + 1e-6):
+            raise SafetyStop("step")
+        q_goal = q + dq
         pos, rot = self.kin.fk(q_goal)
         tip = pos + rot[:, 2] * self.cfg["robot"]["nominal_tcp"]["protrusion_m"]
         if (np.abs(tip - hole_mouth) > lim["workspace_mm"] / 1000).any():
             raise SafetyStop("workspace")
         self.p_des, self.quat_des = p_des, quat_des
-        self.q_prev, self.last_action = q, action
+        self.q_prev, self.last_action = q.copy(), action.copy()
         return q_goal
