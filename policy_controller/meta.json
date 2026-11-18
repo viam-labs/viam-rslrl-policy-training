@@ -1,7 +1,7 @@
 {
   "$schema": "https://dl.viam.dev/module.schema.json",
   "module_id": "devrel:rl-policy",
-  "visibility": "private",
+  "visibility": "public_unlisted",
   "url": "",
   "description": "Runs an RSL-RL insertion policy (rl-insert ML model package) on an arm by streaming joint points.",
   "models": [
