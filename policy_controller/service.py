@@ -60,7 +60,7 @@ class PolicyController(Generic, EasyResource):
         self.arm = dependencies[Arm.get_resource_name(attrs["arm"])]
         self.gripper = dependencies[Gripper.get_resource_name(attrs["gripper"])]  # held by the caller, unused here
         self.mlmodel = dependencies[MLModel.get_resource_name(attrs["mlmodel"])]
-        self.hole = np.array(attrs["hole_mouth_mm"], float) / 1000
+        self.hole_cfg = self.hole = np.array(attrs["hole_mouth_mm"], float) / 1000
         self.timeout_s, self.max_overruns = float(attrs.get("timeout_s", 10)), int(attrs.get("max_overruns", 3))
         self.policy = Policy(
             self.cfg,
@@ -78,6 +78,9 @@ class PolicyController(Generic, EasyResource):
                 # outside the trained start distribution (offset and tilt from the pre-insert pose).
                 if self.state == "running":
                     raise RuntimeError("already running")
+                # Optional per-episode hole estimate (mm, arm base frame), e.g. from vision; else the configured one.
+                hole = command.get("hole_mouth_mm")
+                self.hole = self.hole_cfg if hole is None else np.array(hole, float) / 1000
                 self.policy.reset()
                 self.state, self.reason, self.steps, self.overruns, self.last_obs = "running", None, 0, 0, None
                 self.ticks = []
@@ -102,7 +105,7 @@ class PolicyController(Generic, EasyResource):
             case "pre_insert_pose":
                 # Flange pose in the ARM BASE frame: the caller builds a PoseInFrame with the arm's frame name.
                 lo, hi = self.cfg["task"]["pre_insert_tip_height_m"]
-                q, pose = pre_insert(self.policy.kin, self.cfg, self.hole, (lo + hi) / 2)
+                q, pose = pre_insert(self.policy.kin, self.cfg, self.hole_cfg, (lo + hi) / 2)
                 return pose | {"frame": "arm base", "joints_deg": np.degrees(q).tolist()}
         raise ValueError(f"unknown command {command.get('command')}")
 
@@ -124,6 +127,9 @@ class PolicyController(Generic, EasyResource):
         try:
             q = np.radians((await self.arm.get_joint_positions()).values)
             prev_goal = q
+            # Warm-up: the first infer after a (re)start is slow enough to overrun ticks (sim-to-sim, 2026-11-18).
+            await self.mlmodel.infer({io["inputs"][0]["name"]: self.policy.observe(q, self.hole)[None].astype(np.float32)})
+            self.policy.reset()  # observe() above recorded nothing, but start the episode clean
             queue.put_nowait([Arm.TrajectoryPoint(timedelta(0), np.degrees(q).tolist())])
             stream = asyncio.create_task(consume())
             t0 = time.monotonic()  # the stream anchor is set server-side a little later: our times run early, the safe side

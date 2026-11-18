@@ -79,7 +79,8 @@ def controller(kin_cfg, hole, action):
     kin, cfg = kin_cfg
     c = PolicyController.__new__(PolicyController)
     q = np.array(cfg["control"]["default_joint_pos"])
-    c.cfg, c.hole, c.timeout_s, c.max_overruns = cfg, np.array(hole), 10, 3
+    c.cfg, c.timeout_s, c.max_overruns = cfg, 10, 3
+    c.hole = c.hole_cfg = np.array(hole)
     c.policy = Policy(cfg, kin)
     c.arm, c.mlmodel = FakeArm(np.degrees(q).tolist()), FakeModel(action)
     c.state, c.reason, c.steps, c.overruns, c.last_obs = "running", None, 0, 0, None
@@ -155,3 +156,16 @@ def test_new_configures(kin_cfg, tmp_path):
     deps = {Arm.get_resource_name("a"): FakeArm([0] * 6), Gripper.get_resource_name("g"): object(), MLModel.get_resource_name("m"): FakeModel(np.zeros(6))}
     c = PolicyController.new(conf, deps)
     assert c.state == "idle" and c.hole.tolist() == [0.4, 0, 0.05] and c.max_overruns == 3
+
+
+def test_start_takes_a_per_episode_hole(kin_cfg):
+    c = controller(kin_cfg, [0.4, 0, 0.05], np.zeros(6))
+    c.state, c.task = "idle", None
+
+    async def go():
+        await c.do_command({"command": "start", "hole_mouth_mm": [401, -2, 50.5]})
+        await c._halt()
+
+    asyncio.run(go())
+    np.testing.assert_allclose(c.hole, [0.401, -0.002, 0.0505])
+    np.testing.assert_allclose(c.hole_cfg, [0.4, 0, 0.05])
