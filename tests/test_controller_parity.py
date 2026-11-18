@@ -41,15 +41,17 @@ def test_observation_matches_training(tmp_path):
     (tmp_path / "kinematics.xml").write_text(kinematics_spec().to_xml())
     cfg = control_contract(env.cfg)
     terms = env.cfg.observations["actor"].terms
-    config = cfg | {"observation": {"terms": [{"name": n} for n in terms]}}
+    dims = [d[0] for d in env.observation_manager.group_obs_term_dim["actor"]]
+    config = cfg | {"observation": {"terms": [{"name": n, "dim": d} for n, d in zip(terms, dims, strict=True)]}}
     kin = Kinematics(tmp_path / "kinematics.xml", cfg["control"])
     policies = [Policy(config, kin) for _ in range(4)]  # one Kinematics: act() follows observe() per env
     term = env.action_manager.get_term("ee_delta")
-    names, dims = list(terms), [3, 6, 6, 6, 6, 6]
+    names = list(terms)
     offs = np.cumsum([0, *dims])
     worst = dict.fromkeys(names, 0.0)
     gen = torch.Generator().manual_seed(1)
-    for _ in range(150):
+    resets = 0
+    for step in range(150):
         obs = env.observation_manager.compute()["actor"].numpy()
         hole = (mdp.hole_mouth(env) + mdp.state(env).hole_bias - env.scene.env_origins).numpy()  # base frame, as on the arm
         q = term._entity.data.joint_pos[:, term._joint_ids].numpy().copy()
@@ -57,6 +59,7 @@ def test_observation_matches_training(tmp_path):
         for i in range(4):
             if env.episode_length_buf[i] == 0:
                 policies[i].reset()
+                resets += step > 0
             mine = policies[i].observe(q[i], hole[i])
             assert mine.shape == obs[i].shape
             for j, n in enumerate(names):
@@ -64,6 +67,7 @@ def test_observation_matches_training(tmp_path):
                 worst[n] = max(worst[n], err)
             policies[i].act(q[i], hole[i], a[i].numpy())
         env.step(a)
+    assert resets > 0, "no env reset mid-run: raise steps or action scale"
     assert all(e < 1e-5 for e in worst.values()), worst
 
 

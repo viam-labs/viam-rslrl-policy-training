@@ -111,6 +111,8 @@ class Policy:
         self.last_action = np.zeros(self.cfg["action"]["dim"])
 
     def observe(self, q, hole_mouth):
+        """Actor observation (obs_dim,). q: measured arm joints, rad. hole_mouth: estimated hole mouth, m, arm base
+        frame (the frame fk() returns; the service converts hole_mouth_mm / 1000)."""
         q = np.asarray(q, float)
         ctl, dt = self.cfg["control"], self.cfg["control"]["policy_dt"]
         pos, rot = self.kin.fk(q)
@@ -128,7 +130,9 @@ class Policy:
         for term in self.cfg["observation"]["terms"]:
             if term["name"] not in recipes:
                 raise ValueError(f"no recipe for observation term {term['name']}")
-            out.append(np.asarray(recipes[term["name"]](), float))
+            v = np.asarray(recipes[term["name"]](), float)
+            assert "dim" not in term or v.shape == (term["dim"],), term["name"]
+            out.append(v)
         return np.concatenate(out)
 
     def act(self, q, hole_mouth, action):
