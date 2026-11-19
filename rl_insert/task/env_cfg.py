@@ -72,7 +72,7 @@ class TaskParams:
     # GripperParams.grip_force and no longer randomized: it only presses the pads on a welded peg.
     grasp_solref: float = 0.002  # s, weld time constant; see _add_grasp_weld for the measured compliance
     start_joint_offset: float = 0.02  # +/- rad per arm joint at reset (TCP tilt up to a few degrees)
-    pd_gain_scale: tuple[float, float] = (0.8, 1.2)  # arm servo kp and kd, scaled per episode
+    pd_gain_scale: tuple[float, float] = (0.5, 2.0)  # kp 5e3-2e4: covers the real arm's estimated range
     action_delay_steps: tuple[int, int] = (0, 2)  # policy steps; constant within an episode
     episode_s: float = 10.0
     decimation: int = 50  # 1 ms physics, 20 Hz policy
