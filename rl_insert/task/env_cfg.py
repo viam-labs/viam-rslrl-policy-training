@@ -63,7 +63,8 @@ class TaskParams:
     grasp_tilt: float = float(np.deg2rad(3.0))  # +/- rad about TCP y (the pad normal)
     success_depth: float = 0.015  # of the 20 mm bore
     success_centred: float = 0.001
-    force_limit: float = 20.0  # N, terminate. Was 40: armfarm15 tripped C31 (sensitivity 3) under side load
+    force_limit: float = 20.0  # N, terminate once succeeding. Was 40: armfarm15 tripped C31 (sensitivity 3)
+    force_limit_start: float = 60.0  # N, terminate before any success; tightens to force_limit with success rate
     force_penalty_from: float = 8.0  # N
     max_slip: float = 0.003  # m: pivoting the peg in the hand is failure (was 0.01)
     action_pos_scale: float = 0.002  # m per unit action per policy step
@@ -379,7 +380,9 @@ def peg_insert_env_cfg(p: TaskParams = TaskParams(), play: bool = False) -> Mana
                 func=mdp.success, params={"depth": depth, "centred": p.success_centred}
             ),
             "peg_slipped": TerminationTermCfg(func=mdp.peg_slipped, params={"max_slip": p.max_slip}),
-            "excess_force": TerminationTermCfg(func=mdp.excess_force, params={"threshold": p.force_limit}),
+            "excess_force": TerminationTermCfg(
+                func=mdp.excess_force_tightening, params={"start": p.force_limit_start, "final": p.force_limit}
+            ),
             "gripper_hit": TerminationTermCfg(func=mdp.gripper_hit),
         },
         curriculum={

@@ -117,6 +117,7 @@ def control_contract(env_cfg: ManagerBasedRlEnvCfg, p: TaskParams | None = None)
             "success_centred_m": p.success_centred,
             "time_limit_s": env_cfg.episode_length_s,
             "force_limit_n": p.force_limit,
+            "force_limit_start_n": p.force_limit_start,
         },
     }
 

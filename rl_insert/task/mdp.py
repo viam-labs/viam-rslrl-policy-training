@@ -303,6 +303,15 @@ def excess_force(env: ManagerBasedRlEnv, threshold: float) -> torch.Tensor:
     return peg_hole_force(env).norm(dim=-1) > threshold
 
 
+def excess_force_tightening(env: ManagerBasedRlEnv, start: float, final: float) -> torch.Tensor:
+    """excess_force with a threshold that tightens from `start` to `final` N as the window success rate rises.
+
+    Run 7 (stiff arm, kp 1e4) at a fixed 20 N never succeeded: a 1 mm step onto the rim makes ~66 N, so
+    every exploring contact ended the episode and the policy learned to hover. Same lesson as the penalty.
+    """
+    return peg_hole_force(env).norm(dim=-1) > start + (final - start) * state(env).rate
+
+
 def excess_force_penalty(env: ManagerBasedRlEnv, threshold: float) -> torch.Tensor:
     """excess_force scaled by the recent success rate (InsertState.rate, 0 until a window completes).
 

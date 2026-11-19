@@ -65,3 +65,12 @@ def test_window_rate_scales_excess_force_penalty(monkeypatch):
     assert abs(s.rate - 0.4) < 1e-9
     monkeypatch.setattr(mdp, "excess_force", lambda env, threshold: torch.tensor([True, False]))
     assert torch.allclose(mdp.excess_force_penalty(env, 40.0), torch.tensor([0.4, 0.0]))
+
+
+def test_force_termination_tightens_with_success_rate(monkeypatch):
+    env, s, succ = make()
+    monkeypatch.setattr(mdp, "peg_hole_force", lambda env: torch.tensor([[50.0, 0, 0], [30.0, 0, 0]]))
+    assert mdp.excess_force_tightening(env, 60.0, 20.0).tolist() == [False, False]  # rate 0: 60 N
+    succ[:5] = True
+    call(env, list(range(10)))  # window rate 0.5: 40 N
+    assert mdp.excess_force_tightening(env, 60.0, 20.0).tolist() == [True, False]
