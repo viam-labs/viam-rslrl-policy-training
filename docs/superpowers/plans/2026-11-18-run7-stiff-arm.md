@@ -227,6 +227,7 @@ def tip_lateral_under_load(env: ManagerBasedRlEnv, force_n: float, seconds: floa
 - [ ] **Step 3: Commit** `feat(model): config.json records run 7's servo and grasp model`
 
 ### Task 6: Probe, then run 7
+**Progress 2026-11-18:** Tasks 1-5 committed (ea9dff5, 0f668ec, cb5c7b4, 0f7c74a, 75dcf36; suite 85 passed). Measured grasp pivot under 20 N at the tip: torquescale 3 -> 4.87 mm, 10 -> 0.63 mm (CPU). Script v8 uploaded. Probe job `6afe620aa2b9fca699211449` (A100): grasp hold settle 0.12 / creep 0.02 mm (pass), 13.2k policy steps/s at 4096 envs, video uploaded. Run 7 job `6afe6593b2c0e1b5b559b180`: rl-insert v7, clearance 0.35 mm, 1000 iterations, run name `c0.35-run7`, container `35da1a78`.
 
 Follow `docs/superpowers/plans/2026-11-17-peg-insert-training.md` Tasks 6-8 (container, script upload, probe, run), DevRelDemos org. Never re-push a registered tag; bump the script version (run 6 was script v7, so v8).
 
