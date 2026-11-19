@@ -72,3 +72,28 @@ def test_closed_g2_presses_each_pad_with_grip_force():
             if g in force:
                 force[g] += f[0]
     np.testing.assert_allclose(list(force.values()), GripperParams().grip_force, rtol=0.02)
+
+
+def test_stiff_servo_settles_without_limit_cycle():
+    """kp 1e4 x [0.5, 2] with armature: every joint settles from a 10 mrad step (Euler, 1 ms).
+    Without armature J6 limit-cycles even at kp 2000 (2026-11-18 stiffness study)."""
+    from rl_insert.robot import ArmParams, GripperParams
+
+    for scale in (0.5, 1.0, 2.0):
+        spec = load_xarm6(ArmParams(kp=ArmParams().kp * scale))
+        add_gripper(spec, GripperParams())
+        m = spec.compile()
+        m.opt.timestep, m.opt.integrator = 0.001, mujoco.mjtIntegrator.mjINT_EULER
+        d = mujoco.MjData(m)
+        q0 = np.array([0, -0.0728, -0.6831, 0, 0.7560, 0])
+        d.qpos[:6] = q0
+        d.ctrl[:6] = q0 + 0.01
+        for _ in range(300):
+            mujoco.mj_step(m, d)
+        tail = []
+        for _ in range(200):
+            mujoco.mj_step(m, d)
+            tail.append(d.qpos[:6].copy())
+        tail = np.array(tail)
+        assert np.abs(tail - (q0 + 0.01)).max() < 1e-3, scale  # within 1 mrad
+        assert np.ptp(tail, axis=0).max() < 2e-4, scale  # no limit cycle

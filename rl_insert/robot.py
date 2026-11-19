@@ -18,9 +18,12 @@ FLANGE = "link_eef"
 
 @dataclass(frozen=True)
 class ArmParams:
-    # ponytail: stiff PD standing in for the xArm's position servo; tune against logged real tracking
-    kp: float = 2000.0
+    # ponytail: estimate. Real xArm6 tip stiffness is unmeasured (no dial indicator, 2026-11-18); gear-only
+    # bounds need kp ~3.7e3-1.8e4 for x/z. Measure with plan 4's push-gauge procedure and retune.
+    kp: float = 1e4
     dampratio: float = 1.0
+    # Reflected rotor inertia guess; also keeps the explicit (Euler) servo stable at high kp.
+    armature: tuple[float, ...] = (0.1, 0.1, 0.1, 0.05, 0.05, 0.05)
 
 
 @dataclass(frozen=True)
@@ -44,6 +47,8 @@ def load_xarm6(arm: ArmParams = ArmParams()) -> mujoco.MjSpec:
     spec = mujoco.MjSpec.from_file(str(XARM6_URDF))
     for body in spec.bodies[1:]:  # skip world
         body.gravcomp = 1.0  # the real xArm servo holds pose; without this the TCP sags ~9 mm
+    for name, a in zip(ARM_JOINTS, arm.armature):
+        spec.joint(name).armature = a
     for name in ARM_JOINTS:
         act = spec.add_actuator(name=name, target=name, trntype=mujoco.mjtTrn.mjTRN_JOINT)
         act.set_to_position(kp=arm.kp, dampratio=arm.dampratio, inheritrange=True)
