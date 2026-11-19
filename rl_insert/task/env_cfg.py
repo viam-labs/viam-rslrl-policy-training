@@ -63,9 +63,9 @@ class TaskParams:
     grasp_tilt: float = float(np.deg2rad(3.0))  # +/- rad about TCP y (the pad normal)
     success_depth: float = 0.015  # of the 20 mm bore
     success_centred: float = 0.001
-    force_limit: float = 40.0  # N, terminate; keep below the xArm's collision trip
-    force_penalty_from: float = 15.0  # N
-    max_slip: float = 0.01  # m
+    force_limit: float = 20.0  # N, terminate. Was 40: armfarm15 tripped C31 (sensitivity 3) under side load
+    force_penalty_from: float = 8.0  # N
+    max_slip: float = 0.003  # m: pivoting the peg in the hand is failure (was 0.01)
     action_pos_scale: float = 0.002  # m per unit action per policy step
     action_rot_scale: float = float(np.deg2rad(1.0))  # rad per unit action per policy step
     # The peg is held by a compliant weld (see _add_grasp_weld), so grip force is fixed at
