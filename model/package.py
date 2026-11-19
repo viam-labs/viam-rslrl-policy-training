@@ -92,7 +92,9 @@ def control_contract(env_cfg: ManagerBasedRlEnvCfg, p: TaskParams | None = None)
                 "joint_limit_weight": ik.joint_limit_weight,
                 "posture_weight": ik.posture_weight,
             },
-            "joint_servo_sim": {"kp": arm.kp, "dampratio": arm.dampratio, "gravity_compensated": True},
+            "joint_servo_sim": {
+                "kp": arm.kp, "dampratio": arm.dampratio, "armature": list(arm.armature), "gravity_compensated": True,
+            },
             "gripper": {"close_command": 0.0, **asdict(g)},
         },
         "robot": {
@@ -157,6 +159,7 @@ def build_config(onnx_path: Path, env_cfg: ManagerBasedRlEnvCfg, p: TaskParams, 
             "hole_bias_m": list(p.hole_bias),
             "grasp_offset_m": p.grasp_offset,
             "grasp_tilt_rad": p.grasp_tilt,
+            "grasp_torquescale": list(p.grasp_torquescale),
             "difficulty_init": p.difficulty_init,
             "hole_friction": list(events["friction_peg_hole"].params["ranges"]),
             "pad_friction": list(events["friction_finger_peg"].params["ranges"]),
@@ -168,14 +171,15 @@ def build_config(onnx_path: Path, env_cfg: ManagerBasedRlEnvCfg, p: TaskParams, 
                 "force/torque sensing (none on the real arm either)",
                 "hole orientation error (the hole is upright, zero yaw; bias is position only)",
                 "part dimension tolerances (clearance is fixed per run)",
-                "real grasp slip (the grasp is a compliant weld)",
+                "grasp slip along the peg axis and breakaway (the grasp is a compliant weld: it pivots, it doesn't slide)",
             ],
         },
         "grasp_model": {
             "type": "weld",
             "doc": "sim holds the peg with a compliant weld (gripper body to peg, anchored at the TCP) at "
-            "the sampled grasp offset; pads still close on it at a fixed grip force. Real grasp "
-            "slip is not modelled: at <= 40 N the G2 (10-50 N grip) holds a 20 g peg.",
+            "the sampled grasp offset; pads still close on it at a fixed grip force. The weld's rotation "
+            "weight (grasp_torquescale) is sampled per episode, so the peg pivots in the hand under side "
+            "load as the real G2 pinch did (armfarm15, 2026-11-18); axial slip is not modelled.",
             "weld_solref_timeconst_s": p.grasp_solref,
             "grip_force_n": g.grip_force,
         },
