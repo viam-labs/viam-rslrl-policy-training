@@ -71,6 +71,10 @@ class TaskParams:
     # The peg is held by a compliant weld (see _add_grasp_weld), so grip force is fixed at
     # GripperParams.grip_force and no longer randomized: it only presses the pads on a welded peg.
     grasp_solref: float = 0.002  # s, weld time constant; see _add_grasp_weld for the measured compliance
+    # ponytail: estimate. Weld rotation weight, per episode: low = the peg pivots in the pads under side
+    # load (real G2 pinch, plan 4 Task 8), high = rigid. Retune from a measured pivot force.
+    # Plan review (CPU, kp 2000, 20 N at the tip): ts 10 -> 0.56 mm, ts 2 -> 8.8 mm in the hand; real ~5 mm.
+    grasp_torquescale: tuple[float, float] = (3.0, 10.0)
     start_joint_offset: float = 0.02  # +/- rad per arm joint at reset (TCP tilt up to a few degrees)
     pd_gain_scale: tuple[float, float] = (0.5, 2.0)  # kp 5e3-2e4: covers the real arm's estimated range
     action_delay_steps: tuple[int, int] = (0, 2)  # policy steps; constant within an episode

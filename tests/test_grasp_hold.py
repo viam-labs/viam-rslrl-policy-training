@@ -3,11 +3,15 @@
 settle: the first 0.5 s after reset (no knock when the fingers close); creep: the next 2 s.
 """
 
+from dataclasses import replace
+
 from rl_insert.task.checks import grasp_hold_slip, make_env
+from rl_insert.task.env_cfg import TaskParams
 
 
 def test_grasp_holds_for_2s():
-    env = make_env(num_envs=64, device="cpu")
+    lo = TaskParams().grasp_torquescale[0]
+    env = make_env(num_envs=64, device="cpu", p=replace(TaskParams(), grasp_torquescale=(lo, lo)))
     slip = grasp_hold_slip(env, seconds=2.0, settle_s=0.5)
     print(f"max slip along TCP z (mm): {slip}")
     assert slip["settle_mm"] < 0.5

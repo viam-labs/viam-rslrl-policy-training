@@ -28,6 +28,7 @@ GRASP_WELD = "grasp"  # the peg-to-gripper weld equality added by env_cfg._add_g
 # Weld weight on rotation vs translation. At 1 the 20 g peg's tiny inertia leaves the weld soft in
 # rotation: pad torque about the TCP swung the tip (40 mm out) p95 7 mm, max 10, under random
 # actions on CPU, 64 envs. At 10: p95 0.23 mm, max 0.6 (100 gives the same).
+# Placeholder default for _add_grasp_weld; the per-episode value is sampled from TaskParams.grasp_torquescale.
 GRASP_TORQUESCALE = 10.0
 FLIP = torch.diag(torch.tensor([1.0, -1.0, -1.0]))  # peg +z points back toward the gripper
 
@@ -165,7 +166,8 @@ class ResetPegInHand:
         in_peg = (peg_rot.transpose(-1, -2) @ (pos - tip).unsqueeze(-1)).squeeze(-1)
         in_grip = (g_rot.transpose(-1, -2) @ (pos - g_pos).unsqueeze(-1)).squeeze(-1)
         rel = quat_mul(quat_conjugate(g_quat), peg_quat)
-        tail = torch.tensor([GRASP_TORQUESCALE, 0.0], device=dev).expand(n, 2)
+        ts = _uniform(n, *p["grasp_torquescale"], dev)
+        tail = torch.stack([ts, torch.zeros(n, device=dev)], dim=-1)
         env.sim.model.eq_data[env_ids, s.weld_id] = torch.cat([in_peg, in_grip, rel, tail], dim=-1)
 
         lat = p["start_lateral"] * s.difficulty
