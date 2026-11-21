@@ -26,7 +26,7 @@ class Limits:
     late_window: int = 50
     late_fraction: float = 0.05
     late_streak: int = 3
-    call_timeout_s: float = 0.015
+    call_timeout_s: float = 0.05  # one call; 15 ms killed a live episode on a rare stall (p99 ~6 ms). The duck tips in ~1.5 s.
     ramp_s: float = 1.0
     warmup_timeout_s: float = 1.0
     stale_ticks: int = 3

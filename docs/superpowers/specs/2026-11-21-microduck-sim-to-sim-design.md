@@ -276,7 +276,7 @@ gRPC round trips add some in sim, and parity shows whether injection is needed.
 | Overruns | more than 5 % of the last 50 ticks late, or 3 in a row | stop, torque on, hold the last targets |
 | Stale state | snapshot `t` not advanced since the last tick | stop, torque on, hold the last targets |
 | Sim rebuilt | snapshot `generation` differs from the one at `start` | stop, torque on, hold the last targets |
-| Hung call | `io` or `Infer` exceeds 15 ms | stop, torque on, hold the last targets |
+| Hung call | `io` or `Infer` exceeds 50 ms (was 15 ms; a rare stall killed a live episode, p99 is about 6 ms) | stop, torque on, hold the last targets |
 | Bad command | `set_command` outside the trained twist ranges | clip, and note it in `status` |
 
 - `start` ramps from the current pose to the default pose over 1 s, then hands over to the policy.
