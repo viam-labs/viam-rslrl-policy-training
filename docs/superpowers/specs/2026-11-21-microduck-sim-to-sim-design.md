@@ -308,6 +308,16 @@ Each milestone gets its own implementation plan.
 - **MuJoCo version.** mujoco-sim runs MuJoCo 4.0, while `microduck_rl` and the BAM fit use 3.10. If
   parity fails on tracking rather than on timing, check this first. The reference runner can run on
   4.0 to separate the two.
+- **Reference vs. our scene.** Two differences found while planning milestone 1:
+  - `infer_policy.py` loads `scene.xml` (`robot_groundcontact.xml`) with the scene's integrator,
+    which defaults to Euler.
+  - mujoco-sim compiles with `implicitfast`, and our package uses `robot_walk.xml`, the velocity
+    task's training model.
+
+  The parity reference runner must load the same `duck.xml` and set `implicitfast`, so the only
+  difference left is the stack under test.
+- **Gravity compensation.** mujoco-sim's `load_mjcf` gravity-compensates every body of a robot
+  file. Milestone 1 turns that off for floating robots; a weightless duck would pass every check.
 - **Loop timing.** Python and two gRPC hops per tick against a 20 ms budget. The timing bar measures
   it in sim. On the RK3566 it is re-measured in the `BusIO` spec.
 - **`onnx-cpu` on arm64.** Confirm that `viam:mlmodel:onnx-cpu` publishes linux/arm64 before

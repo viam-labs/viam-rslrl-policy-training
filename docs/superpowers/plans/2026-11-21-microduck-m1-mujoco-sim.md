@@ -48,6 +48,12 @@ The duck package is built in this repo from a pinned `microduck_rl` commit.
   out of the scene.
 - In the `sim` test fixture (`tests/conftest.py`), `sim.run(fn)` runs inline, and nothing steps
   unless the test calls `sim.advance(seconds)`.
+- `RobotHandle` loads its file with `robots.load_mjcf`, which sets `gravcomp = 1` on every body.
+  That's meant for position-servoed arms; a floating robot with it would hover weightless. Task 2
+  clears it for floating robots.
+- `bam.mujoco.MujocoController.__init__` (62bd8ce) calls `mj_setConst(model, data)`, which resets
+  that `data`'s qpos to `qpos0`. Task 4 constructs it on scratch data.
+- mujoco-sim compiles every scene with `mjINT_IMPLICITFAST` (`sim.py:666`).
 - MuJoCo 4.0 `MjSpec`:
   - `MjsJoint.damping` is a shape-(3,) array;
   - `MjsActuator.forcelimited` and `ctrllimited` are `mujoco.mjtLimited` enums;
@@ -181,14 +187,21 @@ import pytest
 from mujoco_module.handles import ArmHandle
 from mujoco_module.robot_file import RobotHandle
 
-# A 0.3 kg trunk on a free joint, two 2-hinge legs about y. Actuator order interleaves the legs the
-# way the duck's file does (left, then right), so io's joint order is the file's actuator order.
+# A 0.3 kg trunk on a free joint, and two 2-hinge legs about y with wide flat box feet, so it
+# stands statically. Actuator order interleaves the legs the way the duck's file does (left, then
+# right), so io's joint order is the file's actuator order. Geometry at STAND (hip 0.15,
+# knee -0.3):
+# - each 0.1 m segment drops 0.1*cos(0.15) = 0.0989 m;
+# - the shin's world pitch is -0.15, so the foot box is pitched +0.15 on the shin to lie flat;
+# - trunk centre to sole is 0.03 + 2*0.0989 + 0.005 = 0.2328, so the trunk starts at 0.234,
+#   about 1 mm above the floor.
+# STAND must differ from qpos0 (all zeros): several tests use that to catch a qpos wipe.
 FLOATER = """
 <mujoco>
   <compiler angle="radian"/>
   <default><joint damping="0.05" frictionloss="0.01" armature="0.001"/><position kp="5"/></default>
   <worldbody>
-    <body name="trunk" pos="0 0 0.3">
+    <body name="trunk" pos="0 0 0.234">
       <freejoint name="root"/>
       <geom type="box" size="0.05 0.04 0.03" mass="0.3"/>
       <body name="l_thigh" pos="0 0.03 -0.03">
@@ -197,6 +210,7 @@ FLOATER = """
         <body name="l_shin" pos="0 0 -0.1">
           <joint name="l_knee" axis="0 1 0" range="-1.5 1.5"/>
           <geom type="capsule" fromto="0 0 0 0 0 -0.1" size="0.01" mass="0.05"/>
+          <geom type="box" size="0.04 0.02 0.005" pos="0 0 -0.105" euler="0 0.15 0" mass="0.02"/>
           <site name="l_foot" pos="0 0 -0.1"/>
         </body>
       </body>
@@ -206,6 +220,7 @@ FLOATER = """
         <body name="r_shin" pos="0 0 -0.1">
           <joint name="r_knee" axis="0 1 0" range="-1.5 1.5"/>
           <geom type="capsule" fromto="0 0 0 0 0 -0.1" size="0.01" mass="0.05"/>
+          <geom type="box" size="0.04 0.02 0.005" pos="0 0 -0.105" euler="0 0.15 0" mass="0.02"/>
           <site name="r_foot" pos="0 0 -0.1"/>
         </body>
       </body>
@@ -218,11 +233,12 @@ FLOATER = """
     <position name="r_knee" joint="r_knee"/>
   </actuator>
   <keyframe>
-    <key name="stand" qpos="0 0 0.3 1 0 0 0  0.3 -0.6 0.3 -0.6" ctrl="0.3 -0.6 0.3 -0.6"/>
+    <key name="stand" qpos="0 0 0.234 1 0 0 0  0.15 -0.3 0.15 -0.3" ctrl="0.15 -0.3 0.15 -0.3"/>
   </keyframe>
 </mujoco>
 """
-STAND = [0.3, -0.6, 0.3, -0.6]
+STAND = [0.15, -0.3, 0.15, -0.3]
+TRUNK_Z = 0.234
 
 
 @pytest.fixture
@@ -244,14 +260,22 @@ def free_qpos(sim, name="duck/root"):
 def test_a_free_root_loads_and_homes_from_its_keyframe(sim, floater):
     robot(sim, floater)
     assert sim.model.joint("duck/root").type == 0  # mjJNT_FREE
-    assert free_qpos(sim) == pytest.approx([0, 0, 0.3, 1, 0, 0, 0])
+    assert free_qpos(sim) == pytest.approx([0, 0, TRUNK_Z, 1, 0, 0, 0])
+
+
+def test_a_floating_robot_has_weight(sim, floater):
+    # load_mjcf gravity-compensates every body (for arms); a floating robot must not hover
+    robot(sim, floater)
+    trunk = sim.model.body("duck/trunk").id
+    assert sim.model.body_gravcomp[trunk] == 0.0
+    assert sim.model.body_gravcomp[sim.model.body("duck/l_shin").id] == 0.0
 
 
 def test_a_free_root_homes_relative_to_the_robots_frame(sim, floater):
     # the keyframe's trunk pose is in the file's world; the robot's frame moves it
     robot(sim, floater, position=[1.0, 0.5, 0.0], orientation_wxyz=[0.7071068, 0, 0, 0.7071068])
     q = free_qpos(sim)
-    assert q[:3] == pytest.approx([1.0, 0.5, 0.3], abs=1e-6)
+    assert q[:3] == pytest.approx([1.0, 0.5, TRUNK_Z], abs=1e-6)
     assert q[3:] == pytest.approx([0.7071068, 0, 0, 0.7071068], abs=1e-6)
 
 
@@ -336,6 +360,11 @@ In `RobotHandle.__init__`, replace the line `check_robot_file(label, spec)` with
 
 ```python
         self.floating_root = check_robot_file(label, spec)
+        if self.floating_root:
+            # load_mjcf gravity-compensates every body, as a fixed arm's controller does; a
+            # floating robot carries its own weight on its legs, or it hovers
+            for body in spec.bodies:
+                body.gravcomp = 0
 ```
 
 After `parent = attrs.get("parent")`, add:
@@ -405,7 +434,7 @@ Append to `tests/test_floating_robot.py`:
 def leg(side, **extra):
     # chain base is the trunk itself, so the arm's frame relative to the robot is the identity
     return {"robot": "duck", "parent": "duck", "joints": [f"{side}_hip", f"{side}_knee"],
-            "flange_site": f"{side}_foot", "home_joints": [0.3, -0.6], **extra}
+            "flange_site": f"{side}_foot", "home_joints": STAND[:2], **extra}
 
 
 def test_limbs_bind_to_a_floating_trunk(sim, floater):
@@ -413,14 +442,15 @@ def test_limbs_bind_to_a_floating_trunk(sim, floater):
     left = ArmHandle(sim, "left-leg", leg("l"))
     ArmHandle(sim, "right-leg", leg("r"))
     assert left.joint_names() == ("l_hip", "l_knee")
-    assert left.get_joint_positions() == pytest.approx([0.3, -0.6], abs=1e-9)
+    assert left.get_joint_positions() == pytest.approx(STAND[:2], abs=1e-9)
     # the arm frame site sits on the trunk and moves with it
     assert sim.data.site("left-leg/arm_frame").xpos == pytest.approx(sim.data.body("duck/trunk").xpos)
 
 
 def test_a_limb_frame_off_the_trunk_says_what_to_paste(sim, floater):
     robot(sim, floater)
-    with pytest.raises(ValueError, match=r'set frame.translation to \{"x": 0.0, "y": 0.0, "z": 0.0\}'):
+    # -?: inv(parent_end) @ base can leave -1e-17, printed as -0.0
+    with pytest.raises(ValueError, match=r'set frame.translation to \{"x": -?0.0, "y": -?0.0, "z": -?0.0\}'):
         ArmHandle(sim, "left-leg", leg("l", position=[0, 0, 0.1]))
 ```
 
@@ -662,10 +692,15 @@ class BamDrive:
                 raise RuntimeError("the robot is not in the scene")
             from bam.mujoco import MujocoController
 
+            # MujocoController.__init__ sets the armature, then calls mj_setConst(model, data),
+            # which resets data.qpos to qpos0. On sim.data that would teleport every joint in the
+            # world. Construct it on scratch data, then point it at the live data.
             ctrl = MujocoController(
-                self.cfg.load(), list(self.names), sim.model, sim.data,
+                self.cfg.load(), list(self.names), sim.model, mujoco.MjData(sim.model),
                 vin_drop_gain=self.cfg.vin_drop_gain or None, vin_min=self.cfg.vin_min,
             )
+            ctrl.mujoco_data = sim.data
+            ctrl.last_ts = sim.data.time
             ctrl.reset(sim.data.qpos)
             self._ctrl, self._generation = ctrl, sim.generation
         return self._ctrl
@@ -737,11 +772,15 @@ def sim5(sim):
 def test_bam_drives_the_robot_and_holds_a_stand(sim5, floater):
     duck = robot(sim5, floater, actuators=BAM)
     assert sim5.model.actuator("duck/l_hip").gainprm[0] == 1.0  # a motor now
-    sim5.advance(0.5)
+    sim5.advance(0.005)
+    # binding must not move anything (MujocoController's mj_setConst resets the data it's given)
+    assert duck.drive.targets(sim5) == pytest.approx(STAND, abs=1e-9)
+    assert free_qpos(sim5)[2] == pytest.approx(TRUNK_Z, abs=0.002)
+    sim5.advance(1.0)
     adr = [sim5.model.joint(f"duck/{n}").qposadr[0] for n in ("l_hip", "l_knee", "r_hip", "r_knee")]
     assert sim5.data.qpos[adr] == pytest.approx(STAND, abs=0.05)  # held near the keyframe
+    assert duck.io(None, None)["gravity"][2] < -0.99  # still upright: the fixture stands
     assert np.any(sim5.data.ctrl != 0.0)  # BAM is writing torques
-    assert duck.drive.targets(sim5) == pytest.approx(STAND, abs=1e-9)
 
 
 def test_bam_rollout_equals_the_controller_run_directly(sim5, floater):
@@ -750,12 +789,11 @@ def test_bam_rollout_equals_the_controller_run_directly(sim5, floater):
 
     duck = robot(sim5, floater, actuators=BAM)
     sim5.advance(0.005)  # bind
-    start = copy.copy(sim5.data)
     ref_data = mujoco.MjData(sim5.model)
-    ref_data.qpos[:], ref_data.qvel[:], ref_data.time = start.qpos, start.qvel, start.time
-    ref_data.act[:] = start.act
+    # construct first (its mj_setConst resets ref_data), then copy the live state in exactly
     ref = MujocoController(duck.drive.cfg.load(), list(duck.drive.names), sim5.model, ref_data,
                            vin_drop_gain=0.1, vin_min=6.0)
+    mujoco.mj_copyData(ref_data, sim5.model, sim5.data)
     ref.q_target[:] = duck.drive.targets(sim5)
     ref._prev_motor_torque[:] = duck.drive._ctrl._prev_motor_torque
     ref.last_ts = duck.drive._ctrl.last_ts
@@ -786,8 +824,12 @@ def test_bam_warns_off_its_fitted_step(sim, floater, caplog):
 
 `ref._prev_motor_torque` and `ref.last_ts` are private BAM state. Copying them makes both rollouts
 start identically. If `MujocoController` at 62bd8ce names them differently, read `bam/mujoco.py`
-and copy whatever `reset`/`update` keep between steps. If `copy.copy(MjData)` isn't supported, use
-`mujoco.MjData(sim5.model)` and copy `qpos`, `qvel`, `act` and `time` from `sim5.data` field by field.
+and copy whatever `reset`/`update` keep between steps. Keep the order above: construct the
+reference controller, then `mj_copyData`. Copying fields first and constructing after wipes them
+(`mj_setConst`), and even `copy.copy` before construction diverged by about 4e-6 over 200 steps.
+Constructing first, then `mj_copyData`, matched exactly in a probe.
+
+Drop the now-unused `import copy` from this block.
 
 - [ ] **Step 2: Run the tests to confirm they fail**
 
@@ -842,9 +884,15 @@ Don't special-case it.
 - [ ] **Step 4: Run the tests to confirm they pass**
 
 Run: `uv run python -m pytest tests/test_floating_robot.py -q`
-Expected: PASS. If `test_bam_drives_the_robot_and_holds_a_stand` drifts more than 0.05 rad, the
-floater is too heavy for an XL330. Halve the masses in `FLOATER` rather than loosening the tolerance;
-the test checks that BAM holds, not the duck's balance.
+Expected: PASS.
+
+If `test_bam_drives_the_robot_and_holds_a_stand` fails, check the fixture before touching the
+tolerance:
+- run 2 s and print the trunk z and the gravity vector;
+- the trunk should settle within about 2 mm of `TRUNK_Z` and stay upright;
+- if it tips, widen the foot boxes (size x 0.06), or move the feet under the trunk's centre of mass.
+
+The test checks that BAM holds a pose, not a balance controller.
 
 - [ ] **Step 5: Commit**
 
@@ -882,8 +930,8 @@ def test_limbs_of_a_bam_robot_are_read_only(sim5, floater):
             call()
     left.stop()  # Stop (session end, e-stop) must not fail
     sim5.advance(0.1)
-    assert left.get_commanded_positions() == pytest.approx([0.3, -0.6], abs=1e-6)  # BAM's q_target
-    assert left.get_joint_positions() == pytest.approx([0.3, -0.6], abs=0.05)
+    assert left.get_commanded_positions() == pytest.approx(STAND[:2], abs=1e-6)  # BAM's q_target
+    assert left.get_joint_positions() == pytest.approx(STAND[:2], abs=0.05)
 
 
 def test_a_limb_outside_bams_joints_is_an_error(sim5, floater):
@@ -982,13 +1030,24 @@ def test_io_reads_one_instant_and_applies_targets(sim5, floater):
     assert snap["joints"] == ["l_hip", "l_knee", "r_hip", "r_knee"]
     assert snap["q"] == pytest.approx(STAND, abs=1e-9)
     assert snap["gravity"] == pytest.approx([0, 0, -1], abs=1e-9)
-    assert snap["trunk_pos"] == pytest.approx([0, 0, 0.3]) and snap["generation"] == sim5.generation
+    assert snap["trunk_pos"] == pytest.approx([0, 0, TRUNK_Z]) and snap["generation"] == sim5.generation
     t0 = snap["t"]
-    duck.io([0.5, -0.8, 0.5, -0.8], True)
+    crouch = [0.25, -0.5, 0.25, -0.5]  # a small crouch: the feet tilt 0.1 rad, it stays up
+    duck.io(crouch, True)
     sim5.advance(1.0)
     snap = duck.io(None, None)
     assert snap["t"] == pytest.approx(t0 + 1.0, abs=0.006)
-    assert snap["q"] == pytest.approx([0.5, -0.8, 0.5, -0.8], abs=0.05)
+    assert snap["q"] == pytest.approx(crouch, abs=0.05)
+    assert snap["gravity"][2] < -0.98
+
+
+def test_io_after_a_rebuild_acts_on_the_new_model(sim5, floater):
+    duck = robot(sim5, floater, actuators=BAM)
+    sim5.advance(0.01)
+    ArmHandle(sim5, "left-leg", leg("l", home_joints=[0.2, -0.5]))  # rebuild; no step after it
+    snap = duck.io([0.2, -0.5, 0.15, -0.3], None)  # binds to the new model itself
+    assert duck.drive._generation == sim5.generation == snap["generation"]
+    assert snap["q"][:2] == pytest.approx([0.2, -0.5], abs=1e-6)
 
 
 def test_io_gravity_and_gyro_are_in_the_trunk_frame(sim5, floater):
@@ -1296,8 +1355,10 @@ MODEL_DIR = Path("src/mjlab_microduck/robot/microduck")
 
 
 def stand_keyframe(scene_xml: str) -> str:
-    """scene_walk.xml's STAND <key .../> element, verbatim."""
-    match = re.search(r'<key\s+name="STAND".*?/>', scene_xml, re.S)
+    """scene_walk.xml's STAND <key .../> element, verbatim. Comments are stripped first: the file
+    keeps the old STAND commented out above the STAND2-tuned one (hip_pitch 0.4579, not 0.5236)."""
+    live = re.sub(r"<!--.*?-->", "", scene_xml, flags=re.S)
+    match = re.search(r'<key\s+name="STAND".*?/>', live, re.S)
     if match is None:
         raise SystemExit("scene_walk.xml has no STAND keyframe; is the checkout at the pinned commit?")
     return match.group(0)
@@ -1344,6 +1405,9 @@ uv run python scripts/export_duck_scene.py "${TMPDIR:-/tmp}/microduck_rl"
 
 Expected: `wrote dist/duck-sim and dist/duck-sim.tar.gz`. `dist/` is already git-ignored; check
 with `git check-ignore dist/duck-sim`.
+
+Check the keyframe: `grep -o 'qpos="[^"]*' dist/duck-sim/duck.xml | tr -s ' \n' ' '` must contain
+`-0.457924`. That's the STAND2 hip pitch, not the old 0.5236.
 
 - [ ] **Step 3: Write the example machine config**
 
@@ -1481,6 +1545,14 @@ git commit -m "feat: duck stand check (io joint order, 5 s under BAM); duck-sim 
 ```
 
 ---
+
+## Deferred from the spec, on purpose
+
+- **3D viewer showing the trunk walk** (spec unit 1). It isn't needed for milestone 2. Check
+  `world_state` streaming when there's a reason to.
+- **The rewrite on the real `robot_walk.xml`** (spec testing). The meshes can't live in
+  mujoco-sim's repo. The synthetic floater test compares against Pollen's rewrite code itself, and
+  Task 11 runs the real file.
 
 ## Done when
 
