@@ -7,7 +7,7 @@ driven by a command script instead of the keyboard and run as fast as it can.
 
 The scene is the duck-sim package's duck.xml, so both sides of the parity check simulate the same file
 with the same MuJoCo build. Records, every 0.1 s of sim time: t, trunk position and quaternion, gravity.
---golden saves ticks 0-24 and 600-624 (the turning segment)' raw inputs and the observation infer_policy built, for the obs test.
+--golden saves ticks 0-24 and 600-624 (the turning segment): raw inputs and the observation infer_policy built, for the obs test.
 --stats writes action_bound (2 x p99.9 |action|) and max_step_rad (2 x p99.9 |target change per tick|)
 into the walk package's config.json safety block.
 """
