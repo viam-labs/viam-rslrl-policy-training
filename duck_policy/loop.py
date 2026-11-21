@@ -28,6 +28,8 @@ class Limits:
     late_streak: int = 3
     call_timeout_s: float = 0.015
     ramp_s: float = 1.0
+    warmup_timeout_s: float = 1.0
+    stale_ticks: int = 3
 
 
 class Stop(Exception):
@@ -51,6 +53,7 @@ class PolicyLoop:
         self.max_step = float(safety.get("max_step_rad", 0.5))
         self.command, self.command_clipped = Command(), False
         self.ticks, self.late, self.reason, self.last_obs, self.t0, self.t_end = 0, 0, None, None, None, None
+        self.warmup_ms = None
         self.tick_ms: deque[float] = deque(maxlen=500)
 
     def set_command(self, command: Command) -> None:
@@ -80,7 +83,10 @@ class PolicyLoop:
         except Stop as stop:
             self.reason = stop.reason
             if stop.limp:
-                await self.io.torque(False)
+                try:  # shielded: a concurrent stop can't cancel it; a gRPC error can't escape
+                    await asyncio.shield(self.io.torque(False))
+                except Exception as error:
+                    self.reason += f" (torque off failed: {error})"
         except asyncio.CancelledError:
             self.reason = "stopped"
             raise
@@ -96,6 +102,15 @@ class PolicyLoop:
 
     async def _run(self, max_ticks: int | None) -> None:
         lim = self.limits
+        # Warm-up: the first onnx-cpu infer over gRPC is slow. Not counted, not under call_timeout_s.
+        warm = time.monotonic()
+        out = self.infer(np.zeros(61, np.float32))
+        if asyncio.iscoroutine(out) or isinstance(out, Awaitable):
+            try:
+                await asyncio.wait_for(out, lim.warmup_timeout_s)
+            except asyncio.TimeoutError:
+                raise Stop("hung_call") from None
+        self.warmup_ms = round(1000 * (time.monotonic() - warm), 1)
         snap: Snapshot = await self._call(self.io.torque(True))
         generation, prev_t = snap.generation, snap.t
         # Ramp from where the duck is to the default pose. After a reset at STAND it's already there, and
@@ -110,17 +125,18 @@ class PolicyLoop:
             # later often shows the same t, which would stop with "stale_state" on tick 1.
             await asyncio.sleep(self.dt)
         prev_target, last_action = self.default.copy(), np.zeros(14)
-        fall, late_hist, late_streak = 0, deque(maxlen=lim.late_window), 0
+        fall, late_hist, late_streak, stale, slot = 0, deque(maxlen=lim.late_window), 0, 0, 1
         t0 = self.t0 = time.monotonic()
         while max_ticks is None or self.ticks < max_ticks:
-            deadline = t0 + (self.ticks + 1) * self.dt
+            deadline = t0 + slot * self.dt
             tick_start = time.monotonic()
             snap = await self._call(self.io.read())
             if snap.generation != generation:
                 raise Stop("rebuilt")
-            if snap.t <= prev_t:
+            stale = stale + 1 if snap.t <= prev_t else 0  # a repeated observation is harmless; N in a row isn't
+            if stale >= lim.stale_ticks:
                 raise Stop("stale_state")
-            prev_t = snap.t
+            prev_t = max(prev_t, snap.t)
             fall = fall + 1 if snap.gravity[2] > lim.fall_gravity_z else 0
             if fall >= lim.fall_ticks:
                 raise Stop("fall", limp=True)
@@ -136,20 +152,23 @@ class PolicyLoop:
             self.ticks += 1
             elapsed = time.monotonic() - tick_start
             self.tick_ms.append(1000 * elapsed)
-            is_late = time.monotonic() > deadline
+            now = time.monotonic()
+            is_late = now > deadline
+            # A missed deadline is counted, not caught up: skip to the next grid slot.
+            slot = math.floor((now - t0) / self.dt) + 1 if is_late else slot + 1
             self.late += is_late
             late_hist.append(is_late)
             late_streak = late_streak + 1 if is_late else 0
             if late_streak >= lim.late_streak or (len(late_hist) == lim.late_window
                                                   and sum(late_hist) > lim.late_fraction * lim.late_window):
                 raise Stop("overruns")
-            await asyncio.sleep(max(0.0, deadline - time.monotonic()))
+            await asyncio.sleep(max(0.0, t0 + (slot - 1) * self.dt - time.monotonic()))
 
     def status(self) -> dict:
         ms = sorted(self.tick_ms)
         pct = (lambda p: round(ms[min(len(ms) - 1, int(p * len(ms)))], 2)) if ms else (lambda p: None)
         run_s = None if self.t0 is None else round((self.t_end or time.monotonic()) - self.t0, 3)
-        return {"ticks": self.ticks, "late": self.late, "run_s": run_s,  # run_s: since the loop's t0 (after any ramp)
+        return {"ticks": self.ticks, "late": self.late, "run_s": run_s, "warmup_ms": self.warmup_ms,  # run_s: since the loop's t0 (after any ramp)
                 "tick_ms_p50": pct(0.5), "tick_ms_p99": pct(0.99),
                 "reason": self.reason, "command": [self.command.vx, self.command.vy, self.command.wz],
                 "command_clipped": self.command_clipped}

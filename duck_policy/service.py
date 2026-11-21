@@ -84,13 +84,11 @@ class DuckPolicy(Generic, EasyResource):
                 return {"state": self._state(), "reason": self.loop.reason if self.loop else None}
             case "set_command":
                 c = Command(float(command.get("vx", 0)), float(command.get("vy", 0)), float(command.get("wz", 0)))
-                probe = self.loop or PolicyLoop(SimIO(self.duck, self.cfg["joints"]), self._infer, self.cfg, self.limits)
-                probe.set_command(c)
-                self.command = probe.command
+                clipped = c.clipped(self.cfg["command"]["twist_min"], self.cfg["command"]["twist_max"])
+                self.command = clipped
                 if self.loop:
                     self.loop.set_command(c)
-                return {"command": [self.command.vx, self.command.vy, self.command.wz],
-                        "command_clipped": probe.command_clipped}
+                return {"command": [clipped.vx, clipped.vy, clipped.wz], "command_clipped": clipped != c}
             case "status":
                 status = self.loop.status() if self.loop else {}
                 return {"state": self._state(), **status}

@@ -1,3 +1,2 @@
-viam-sdk>=0.85
+viam-sdk[mlmodel]>=0.85
 numpy
-packaging  # viam.services.mlmodel imports it without declaring it (viam-sdk 0.85.2)

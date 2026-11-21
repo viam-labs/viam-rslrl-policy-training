@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Module entrypoint. The tarball root holds duck_policy/ (the package), run.sh and requirements.txt.
+# Module entrypoint, used as a local module: run.sh lives in duck_policy/ and PYTHONPATH points at the repo root, so the package imports from this checkout. The venv stays in duck_policy/.
 # The env is built with uv: `uv venv` needs no ensurepip, which images such as the Viam sim sandbox
 # lack (no python3-venv). uv comes from PATH, or from its GitHub release into ./bin on first run.
 set -euo pipefail
@@ -21,7 +21,7 @@ PY
     UV="$PWD/bin/uv"
   fi
   rm -rf .venv
-  "$UV" venv -q --python python3 .venv
+  "$UV" venv -q --python 3.12 .venv
   "$UV" pip install -q --python .venv/bin/python -r requirements.txt
   touch .venv/.installed
 fi

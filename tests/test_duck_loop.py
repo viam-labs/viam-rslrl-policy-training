@@ -16,24 +16,30 @@ CFG = {"default_pose": DEFAULT, "action_scale": 1.0, "joint_limits": [[-1.6, 1.6
 class FakeIO:
     """Sim time advances 20 ms per read; gravity and generation can be scripted per read."""
 
-    def __init__(self, gravity=lambda i: [0, 0, -1], generation=lambda i: 1, frozen=False, hang_at=None):
+    def __init__(self, gravity=lambda i: [0, 0, -1], generation=lambda i: 1, frozen=False, hang_at=None,
+                 q=None, slow_at=None, repeat_at=None, torque_fails=False):
         self.i, self.writes, self.torques = 0, [], []
+        self.q, self.slow_at, self.repeat_at, self.torque_fails = q or DEFAULT, slow_at, repeat_at, torque_fails
         self.gravity, self.generation, self.frozen, self.hang_at = gravity, generation, frozen, hang_at
 
     def _snap(self):
-        return Snapshot(t=0.0 if self.frozen else 0.02 * self.i, q=list(DEFAULT), dq=[0.0] * 14, gyro=[0, 0, 0],
+        return Snapshot(t=0.0 if self.frozen else 0.02 * (self.i - (self.i == self.repeat_at)), q=list(self.q), dq=[0.0] * 14, gyro=[0, 0, 0],
                         gravity=self.gravity(self.i), generation=self.generation(self.i), torque=True)
 
     async def read(self):
         self.i += 1
         if self.hang_at is not None and self.i >= self.hang_at:
             await asyncio.sleep(1.0)
+        if self.i == self.slow_at:
+            await asyncio.sleep(0.06)
         return self._snap()
 
     async def write(self, targets):
         self.writes.append(list(targets))
 
     async def torque(self, on):
+        if self.torque_fails and not on:
+            raise RuntimeError("grpc down")
         self.torques.append(on)
         return self._snap()
 
@@ -98,3 +104,45 @@ def test_set_command_is_clipped():
     lp = PolicyLoop(FakeIO(), zero_policy, CFG, Limits())
     lp.set_command(Command(1.0, 0.0, -5.0))
     assert (lp.command.vx, lp.command.wz) == (0.4, -1.0) and lp.command_clipped
+
+
+def test_warmup_infer_runs_first_and_is_reported():
+    io, seen = FakeIO(), []
+
+    def infer(obs):
+        seen.append((len(io.torques), obs.shape))
+        return np.zeros(14, np.float32)
+
+    lp, _ = loop(io, infer=infer, ticks=3)
+    assert seen[0] == (0, (61,))  # before torque(True)
+    assert lp.status()["warmup_ms"] is not None
+
+
+def test_hung_warmup_stops():
+    async def slow(obs):
+        await asyncio.sleep(1.0)
+
+    lp = PolicyLoop(FakeIO(), slow, CFG, Limits(warmup_timeout_s=0.05))
+    assert asyncio.run(lp.run(max_ticks=5)) == "hung_call"
+
+
+def test_overrun_is_counted_not_caught_up():
+    lp, reason = loop(FakeIO(slow_at=15), ticks=40, call_timeout_s=0.2)
+    assert reason == "max_ticks" and lp.late == 1
+
+
+def test_one_repeated_t_continues_three_stop():
+    _, reason = loop(FakeIO(repeat_at=12), ticks=30)
+    assert reason == "max_ticks"
+
+
+def test_limp_survives_a_failed_torque_off():
+    _, reason = loop(FakeIO(gravity=lambda i: [0.9, 0, -0.3], torque_fails=True))
+    assert reason.startswith("fall") and "torque off failed" in reason
+
+
+def test_ramp_writes_before_policy_when_away_from_default():
+    io = FakeIO(q=[0.0] * 14)
+    lp, _ = loop(io, ticks=3)
+    w = np.array(io.writes)
+    assert len(w) == 5 + 3 and w[4] == pytest.approx(DEFAULT) and w[0] == pytest.approx(np.array(DEFAULT) / 5)
