@@ -16,6 +16,7 @@ wandb is installed (mjlab imports it) but never used: logger=tensorboard and WAN
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import logging
 import os
 import shutil
@@ -147,6 +148,7 @@ def train(args, gl: dict) -> None:
         if video:
             uploader.join(timeout=UPLOAD_JOIN_TIMEOUT)
             uploader.sweep(final=True)
+        logger.info("videos: %s", uploader.done)
         try:
             shutil.copytree(log_dir.parent, out / "tmp" / "logs", dirs_exist_ok=True)
         except Exception:
@@ -156,13 +158,18 @@ def train(args, gl: dict) -> None:
 def probe(args, gl: dict) -> None:
     out = args.model_output_directory
     results: dict = {"gl": gl}
-    check(results, "nvidia_smi", lambda: {"out": subprocess.run(["nvidia-smi"], capture_output=True, text=True, timeout=60).stdout[-3000:]}, out)
+    def nvidia_smi() -> dict:
+        exe = shutil.which("nvidia-smi") or "/usr/local/nvidia/bin/nvidia-smi"  # not on PATH on Vertex
+        r = subprocess.run([exe], capture_output=True, text=True, timeout=60)
+        return {"rc": r.returncode, "out": r.stdout[-3000:], "err": r.stderr[-1000:]}
+
+    check(results, "nvidia_smi", nvidia_smi, out)
 
     def versions() -> dict:
         import mjlab, mujoco, mujoco_warp, torch, warp  # noqa: E401
         return {"torch": torch.__version__, "cuda": torch.version.cuda, "cuda_ok": torch.cuda.is_available(),
                 "warp": warp.__version__, "mujoco": mujoco.__version__, "mujoco_warp": getattr(mujoco_warp, "__version__", "?"),
-                "mjlab": getattr(mjlab, "__version__", "?")}
+                "mjlab": importlib.metadata.version("mjlab")}  # mjlab 1.3.0 has no __version__
 
     check(results, "versions", versions, out)
     log_dir = Path(tempfile.mkdtemp(prefix="microduck-probe-")) / "logs" / args.run_name
