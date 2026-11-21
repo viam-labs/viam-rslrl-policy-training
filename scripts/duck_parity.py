@@ -167,13 +167,20 @@ def report(ref_path: Path, ours_path: Path, md: Path) -> None:
         "p99 tick < 20 ms": p99 < 20,
         "late < 1 %": ticks > 0 and late / ticks < 0.01,
     }
+    bad = [e["episode"] for e in clean if not (e["walker"].get("state") == "running"
+                                                and e["walker"].get("ticks", 0) >= 0.98 * 50 * DURATION)]
+    checks["walker ran every episode" + (f" (failed: {bad})" if bad else "")] = not bad
     ref_seg = segment_means(ref["samples"])
-    ours_seg = np.mean([segment_means(e["samples"]) for e in clean], axis=0) if clean else np.full((len(SCRIPT), 2), np.nan)
-    seg_rows = []
-    for k, ((rvx, rwz), (ovx, owz)) in enumerate(zip(ref_seg, ours_seg)):
-        for name, r, o, floor in (("vx", rvx, ovx, 0.03), ("wz", rwz, owz, 0.08)):
-            seg_rows.append((f"segment {k} {name}: ref {r:.3f}, ours {o:.3f}", abs(o - r) <= max(0.25 * abs(r), floor)))
-    checks.update(seg_rows)
+    per_ep = [segment_means(e["samples"]) for e in clean]
+    ours_seg = np.mean(per_ep, axis=0) if clean else np.full((len(SCRIPT), 2), np.nan)
+    allowed = max(1, math.floor(0.1 * len(clean)))
+    for k in range(len(SCRIPT)):
+        for i, (name, floor) in enumerate((("vx", 0.03), ("wz", 0.08))):
+            r, o = ref_seg[k][i], ours_seg[k][i]
+            tol = max(0.25 * abs(r), floor)
+            out = [e["episode"] for e, m in zip(clean, per_ep) if not abs(m[k][i] - r) <= tol]
+            label = f"segment {k} {name}: ref {r:.3f}, ours {o:.3f}, outliers {len(out)}/{len(clean)}"
+            checks[label + (f" {out}" if out else "")] = abs(o - r) <= tol and len(out) <= allowed
     verdict = "machine too slow" if not checks["slip_free >= 18/20"] else ("PASS" if all(checks.values()) else "FAIL")
     lines = [
         f"# MicroDuck walk parity: {verdict}", "",

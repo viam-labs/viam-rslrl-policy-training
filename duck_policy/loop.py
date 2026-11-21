@@ -54,7 +54,7 @@ class PolicyLoop:
         self.command, self.command_clipped = Command(), False
         self.ticks, self.late, self.reason, self.last_obs, self.t0, self.t_end = 0, 0, None, None, None, None
         self.warmup_ms = None
-        self.tick_ms: deque[float] = deque(maxlen=500)
+        self.tick_ms: deque[float] = deque(maxlen=3000)
 
     def set_command(self, command: Command) -> None:
         clipped = command.clipped(self.twist_lo, self.twist_hi)

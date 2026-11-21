@@ -34,6 +34,7 @@ async def main(cell_json, out):
         print("standing status:", {k: st.get(k) for k in ("state", "ticks", "tick_ms_p50", "tick_ms_p99", "late", "warmup_ms", "reason")})
         s = await duck.do_command({"io": {}})
         print("gravity z:", s["gravity"][2])
+        assert st["state"] == "running" and 450 <= st["ticks"] <= 510 and st["tick_ms_p99"] < 20 and s["gravity"][2] < -0.95, "standing check"
         x0 = (await duck.do_command({"io": {}})).get("trunk_pos", [None])[0]
         await walker.do_command({"command": "set_command", "vx": 0.4})
         await asyncio.sleep(2.5)
@@ -43,6 +44,7 @@ async def main(cell_json, out):
         await asyncio.sleep(2.5)
         s = await duck.do_command({"io": {}})
         print(f"trunk x before {x0} after {s.get('trunk_pos', [None])[0]}; gravity z {s['gravity'][2]}")
+        assert s["trunk_pos"][0] - x0 > 0.3, "walking check: moved < 0.3 m"
         print("walking status:", await walker.do_command({"command": "status"}))
         print("stop:", await walker.do_command({"command": "stop"}))
         await world.do_command({"command": "pause"})
