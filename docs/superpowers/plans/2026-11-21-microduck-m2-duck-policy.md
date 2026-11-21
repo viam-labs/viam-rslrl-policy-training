@@ -527,9 +527,11 @@ Notes for the implementer:
 - Print `model.opt` (integrator, cone, impratio, iterations, tolerance) and compare it once with the
   scene mujoco-sim builds. To get that, read `sim.model.opt` from a `SimManager` built the way
   `duck_stand_check.py` builds it. Record any difference in the commit message: it is a parity
-  difference besides real-time stepping. mujoco-sim uses `implicitfast`. If the reference differs,
-  set `model.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST` after loading, so the only
-  remaining difference is the stack under test (spec, risks).
+  difference besides real-time stepping. The two differ: the reference compiles with Euler (from the
+  robot file), while mujoco-sim forces `implicitfast`. Set
+  `model.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST` after loading. Plan review found
+  the dead-zone numbers identical to 3 decimals either way, since BAM leaves no velocity terms for
+  the two integrators to differ on. The change still removes one variable.
 
 - [ ] **Step 2: Run it** (once, creating the golden file and the safety stats):
 
@@ -860,6 +862,10 @@ class PolicyLoop:
         n = 0 if np.abs(start - self.default).max() < 0.05 else max(1, round(lim.ramp_s / self.dt))
         for i in range(1, n + 1):
             await self._call(self.io.write((start + (self.default - start) * i / n).tolist()))
+            await asyncio.sleep(self.dt)
+        if n == 0:
+            # Let sim time move past the torque snapshot's t. mujoco-sim steps in 5 ms, so a read 2 ms
+            # later often shows the same t, which would stop with "stale_state" on tick 1.
             await asyncio.sleep(self.dt)
         prev_target, last_action = self.default.copy(), np.zeros(14)
         fall, late_hist, late_streak = 0, deque(maxlen=lim.late_window), 0

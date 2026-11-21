@@ -219,6 +219,7 @@ These override the text below where they conflict.
 - **Start order.** The duck tips over about 1.5 s after the policy stops holding it, and a `start`
   while paused stops at once with "stale_state". So the order is `play`, then `start` straight away.
   The loop skips its ramp when the duck is already at the default pose, which it is after a reset.
+  It waits one tick before its first read, so sim time has moved past the torque snapshot.
 - **Reference episodes.** The reference is deterministic, so its 20 episodes are identical. The
   start-yaw variation is dropped: on our side, changing yaw would rebuild the scene, and that changes
   `generation`. Our side's variation comes from real-time jitter.
