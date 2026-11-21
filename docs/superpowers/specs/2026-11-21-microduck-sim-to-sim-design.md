@@ -372,6 +372,21 @@ Each milestone gets its own implementation plan.
   - targets are clipped and rate-capped.
 - **Integration:** the parity harness (unit 5) is the milestone 2 gate.
 
+## Follow-ups (later)
+
+- **Show the duck's collision geometry as meshes** in the frame system and the Viam 3D scene
+  (user request, 2026-11-21).
+  - **Starting point:** mujoco-sim arms with MJCF-derived kinematics already support
+    `planning_geometry: "mesh"` and `visual_models`. Try them on the duck's limbs first.
+  - **Known problems:**
+    1. Each limb's derived kinematics puts the chain base's geoms, the trunk, on its first link, so
+       the trunk would appear once per leg. The trunk should come from the robot's own geometries
+       instead.
+    2. The robot's Viam frame is static while the trunk walks, so meshes would stay at the start
+       pose. The `feat/dynamic-frames` worktree (`~/src/viam-mujoco-sim-dynamic`: a pose tracker for
+       any component with a Viam frame) looks like the way to make them follow `trunk_pos` and
+       `trunk_quat_wxyz`.
+
 ## Risks and open questions
 
 - **MuJoCo version.** mujoco-sim runs MuJoCo 4.0, while `microduck_rl` and the BAM fit use 3.10. If
