@@ -1,4 +1,7 @@
 import json
+import shutil
+import subprocess
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -35,3 +38,13 @@ def test_build_config_shape():
 def test_verify_onnx_accepts_a_pollen_policy():
     meta = verify_onnx(VELSTAND, JOINTS)
     assert float(meta["action_scale"]) == 1.0
+
+
+@pytest.mark.skipif(shutil.which("uvx") is None, reason="needs uvx")
+def test_duck_sdist_shim():
+    subprocess.run(["./build_duck.sh"], check=True, capture_output=True)
+    with tarfile.open("dist/microduck-train.tar.gz") as t:
+        names = t.getnames()
+        shim = t.extractfile("microduck_train-0.1.0/model/training.py").read().decode()
+    assert "from duck_train.train import main" in shim
+    assert not any("rl_insert" in n for n in names)
