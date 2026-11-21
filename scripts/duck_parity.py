@@ -5,7 +5,7 @@
 mujoco-sim worktree's environment) and through our stack on a Viam machine (duck-policy + onnx-cpu +
 mujoco-sim io). Spec unit 5.
 
-    uv run scripts/duck_parity.py ours <cell.json> <out.json> [--episodes 20]
+    uv run scripts/duck_parity.py ours <cell.json> <out.json> [--episodes 20] [--script script.json]
     uv run scripts/duck_parity.py report <reference.json> <ours.json> <report.md>
 
 Run the reference with duck_reference.py first. Metrics per side:
@@ -31,7 +31,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
-from duck_reference import DURATION, SCRIPT, command_at  # noqa: E402
+import duck_reference as ref  # noqa: E402
 
 SKILL = Path("/Users/nick.hehr/.claude/plugins/cache/viam-mujoco-sim/mujoco-sim/0.1.6/skills/mujoco-sim-cell/scripts")
 SETTLE_S = 0.5  # skip this much after each command change when scoring tracking
@@ -46,7 +46,7 @@ def tracking(samples: list[dict]) -> dict:
     """Body-frame vx and wz from consecutive pose samples, scored against the command, skipping SETTLE_S
     after each segment boundary."""
     bounds, acc = [], 0.0
-    for seconds, *_ in SCRIPT:
+    for seconds, *_ in ref.SCRIPT:
         acc += seconds
         bounds.append(acc)
     err_vx, err_wz = [], []
@@ -63,7 +63,7 @@ def tracking(samples: list[dict]) -> dict:
         dx, dy = b["trunk_pos"][0] - a["trunk_pos"][0], b["trunk_pos"][1] - a["trunk_pos"][1]
         vx = (math.cos(ym) * dx + math.sin(ym) * dy) / dt
         wz = dyaw / dt
-        cvx, _, cwz = command_at(t_mid)
+        cvx, _, cwz = ref.command_at(t_mid)
         err_vx.append(vx - cvx)
         err_wz.append(wz - cwz)
     rms = lambda e: float(np.sqrt(np.mean(np.square(e)))) if e else float("nan")  # noqa: E731
@@ -75,7 +75,7 @@ def segment_means(samples: list[dict]) -> list[tuple[float, float]]:
     heading change between the first and last sample in the window, which cancels gait sway. vx is the
     chord along the mid heading, scaled to arc length (exact for a constant-curvature arc)."""
     out, start = [], 0.0
-    for seconds, *_ in SCRIPT:
+    for seconds, *_ in ref.SCRIPT:
         end = start + seconds
         w = [s for s in samples if start + SETTLE_S - 1e-6 <= s["t"] <= end + 1e-6]
         start = end
@@ -119,9 +119,9 @@ async def ours(cell_json: Path, out: Path, episodes: int) -> None:
             while True:
                 s = await duck.do_command({"io": {}})
                 t = float(s["t"]) - t0
-                if t >= DURATION:
+                if t >= ref.DURATION:
                     break
-                cmd = command_at(t)
+                cmd = ref.command_at(t)
                 if cmd != last_cmd:
                     await walker.do_command({"command": "set_command", "vx": cmd[0], "vy": cmd[1], "wz": cmd[2]})
                     last_cmd = cmd
@@ -144,9 +144,10 @@ async def ours(cell_json: Path, out: Path, episodes: int) -> None:
 
 
 def report(ref_path: Path, ours_path: Path, md: Path) -> None:
-    ref = json.loads(ref_path.read_text())
+    ref_data = json.loads(ref_path.read_text())
+    ref.set_script(ref_data.get("script") or ref.DEFAULT_SCRIPT)  # the script the reference ran, so the sides can't drift
     eps = json.loads(ours_path.read_text())
-    ref_track, ref_fell = tracking(ref["samples"]), fell(ref["samples"])
+    ref_track, ref_fell = tracking(ref_data["samples"]), fell(ref_data["samples"])
     clean = [e for e in eps if e["slips"] == 0]
     tracks = [tracking(e["samples"]) for e in clean]
     ours_falls = sum(fell(e["samples"]) for e in clean)
@@ -168,13 +169,13 @@ def report(ref_path: Path, ours_path: Path, md: Path) -> None:
         "late < 1 %": ticks > 0 and late / ticks < 0.01,
     }
     bad = [e["episode"] for e in clean if not (e["walker"].get("state") == "running"
-                                                and e["walker"].get("ticks", 0) >= 0.98 * 50 * DURATION)]
+                                                and e["walker"].get("ticks", 0) >= 0.98 * 50 * ref.DURATION)]
     checks["walker ran every episode" + (f" (failed: {bad})" if bad else "")] = not bad
-    ref_seg = segment_means(ref["samples"])
+    ref_seg = segment_means(ref_data["samples"])
     per_ep = [segment_means(e["samples"]) for e in clean]
-    ours_seg = np.mean(per_ep, axis=0) if clean else np.full((len(SCRIPT), 2), np.nan)
+    ours_seg = np.mean(per_ep, axis=0) if clean else np.full((len(ref.SCRIPT), 2), np.nan)
     allowed = max(1, math.floor(0.1 * len(clean)))
-    for k in range(len(SCRIPT)):
+    for k in range(len(ref.SCRIPT)):
         for i, (name, floor) in enumerate((("vx", 0.03), ("wz", 0.08))):
             r, o = ref_seg[k][i], ours_seg[k][i]
             tol = max(0.25 * abs(r), floor)
@@ -195,6 +196,10 @@ def report(ref_path: Path, ours_path: Path, md: Path) -> None:
 
 
 if __name__ == "__main__":
+    if "--script" in sys.argv:  # ours mode; report takes the script from the reference JSON
+        i = sys.argv.index("--script")
+        ref.set_script(json.loads(Path(sys.argv[i + 1]).read_text()))
+        del sys.argv[i:i + 2]
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
     if mode == "ours":
         episodes = int(sys.argv[sys.argv.index("--episodes") + 1]) if "--episodes" in sys.argv else 20

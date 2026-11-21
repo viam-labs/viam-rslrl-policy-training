@@ -3,7 +3,7 @@ code (load_mujoco_with_bam, PolicyInference), its reset sequence and its 4 x 5 m
 driven by a command script instead of the keyboard and run as fast as it can.
 
     uv run --project <mujoco-sim worktree> --with onnxruntime python scripts/duck_reference.py \
-        <microduck_rl checkout> <duck-sim dir> <policy.onnx> <out.json> [--golden tests/data/duck_golden.json] [--stats <walk config.json>]
+        <microduck_rl checkout> <duck-sim dir> <policy.onnx> <out.json> [--golden tests/data/duck_golden.json] [--stats <walk config.json>] [--script script.json]
 
 The scene is the duck-sim package's duck.xml, so both sides of the parity check simulate the same file
 with the same MuJoCo build. Records, every 0.1 s of sim time: t, trunk position and quaternion, gravity.
@@ -27,6 +27,7 @@ import numpy as np
 # ~+-0.38 rad/s. So every moving segment uses values that walk (spec, milestone 2 decisions).
 SCRIPT = [(2.0, 0.0, 0.0, 0.0), (8.0, 0.4, 0.0, 0.0), (5.0, 0.4, 0.0, 0.6), (5.0, 0.4, 0.0, -0.6),
           (4.0, 0.0, 0.0, 0.0), (6.0, -0.4, 0.0, 0.0)]
+DEFAULT_SCRIPT = list(SCRIPT)
 DURATION = sum(seg[0] for seg in SCRIPT)
 TRUNK_Z = 0.125  # infer_policy.py:1376-1383
 
@@ -35,6 +36,13 @@ def opt_summary(model) -> dict:
     o = model.opt
     return {"integrator": int(o.integrator), "cone": int(o.cone), "impratio": float(o.impratio),
             "iterations": int(o.iterations), "tolerance": float(o.tolerance), "timestep": float(o.timestep)}
+
+
+def set_script(script) -> None:
+    """Replace SCRIPT in place (importers hold the list) and recompute DURATION."""
+    global DURATION
+    SCRIPT[:] = [tuple(map(float, seg)) for seg in script]
+    DURATION = sum(seg[0] for seg in SCRIPT)
 
 
 def command_at(t: float) -> tuple[float, float, float]:
@@ -105,6 +113,7 @@ def run(checkout: Path, duck_xml: Path, onnx: Path, golden: Path | None = None) 
         golden.parent.mkdir(parents=True, exist_ok=True)
         golden.write_text(json.dumps({"default_pose": list(map(float, policy.default_pose)), "ticks": ticks}, indent=1))
     return {
+        "script": [list(seg) for seg in SCRIPT],
         "samples": samples,
         "action_p999": float(np.percentile(np.concatenate(actions), 99.9)),
         "step_p999": float(np.percentile(np.concatenate(steps), 99.9)),
@@ -119,7 +128,10 @@ def main() -> None:
     ap.add_argument("out", type=Path)
     ap.add_argument("--golden", type=Path)
     ap.add_argument("--stats", type=Path, help="walk package config.json to write the safety block into")
+    ap.add_argument("--script", type=Path, help="JSON list of [seconds, vx, vy, wz] replacing the default command script")
     args = ap.parse_args()
+    if args.script:
+        set_script(json.loads(args.script.read_text()))
     result = run(args.checkout.resolve(), (args.duck_sim / "duck.xml").resolve(), args.onnx.resolve(), args.golden)
     args.out.write_text(json.dumps(result))
     if args.stats:
