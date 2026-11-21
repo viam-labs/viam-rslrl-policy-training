@@ -198,6 +198,27 @@ These override the text below where they conflict.
   apply, then step. The single combined exchange described above would add a 20 ms lag.
 - **Reference start.** The reference places the trunk at z 0.125 (`infer_policy.py:1376-1383`), so
   the duck's robot frame gets a 5 mm z offset. The keyframe's trunk z is 0.12.
+- **velstand's dead zone.** Pollen documents it in `docs/velstand_policy.md` and
+  `microduck_velstand_env_cfg.py:344-380`. Measured on Pollen's own scene during plan review:
+
+  | Command | Actual |
+  |---|---|
+  | vx 0.15–0.2 | stands still |
+  | vx 0.3 | ~0.10 m/s |
+  | vx 0.4 | ~0.17 m/s |
+  | vx −0.1 to −0.3 | stands still |
+  | vx −0.4 | ~−0.14 m/s |
+  | wz ±0.5 | stands still |
+  | vx 0.4 with wz ±0.6 | ~±0.38 rad/s |
+
+  So unit 5's command script is replaced by: stand 2 s; vx 0.4 for 8 s; vx 0.4 with wz +0.6 for
+  5 s; vx 0.4 with wz −0.6 for 5 s; stop 4 s; vx −0.4 for 6 s. The smoke test walks at vx 0.4. The
+  original script would have passed parity trivially, with both sides standing still. Tracking is
+  scored against the command, so velstand's undershoot (0.17 of 0.4) is the same on both sides and
+  cancels in the 1.25× ratio.
+- **Start order.** The duck tips over about 1.5 s after the policy stops holding it, and a `start`
+  while paused stops at once with "stale_state". So the order is `play`, then `start` straight away.
+  The loop skips its ramp when the duck is already at the default pose, which it is after a reset.
 - **Reference episodes.** The reference is deterministic, so its 20 episodes are identical. The
   start-yaw variation is dropped: on our side, changing yaw would rebuild the scene, and that changes
   `generation`. Our side's variation comes from real-time jitter.

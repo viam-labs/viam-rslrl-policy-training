@@ -86,7 +86,7 @@ and BAM (via the mujoco-sim worktree's environment), `viam:mlmodel:onnx-cpu` 0.2
 | File | Responsibility |
 |---|---|
 | `scripts/export_duck_scene.py` (modify) | Build `duck-sim` from `robot_groundcontact.xml` and `scene.xml`'s STAND keyframe |
-| `scripts/duck_stand_check.py` (modify) | Same checks; homes at 0.125 when given the robot's 5 mm offset |
+| `scripts/duck_stand_check.py` (modify) | Docstring only: the ground-contact model has trunk collision, so a fallen duck rests on the floor instead of sinking |
 | `scripts/fetch_walk_policy.py` (new) | Download velstand at the pinned revision and verify sha256; write `dist/microduck-walk/{policy.onnx, config.json, LICENSE-POLICY.md}` |
 | `scripts/duck_reference.py` (new) | Headless reference built on `infer_policy.py`'s code: runs a command script; records trajectory, golden ticks and action statistics |
 | `scripts/duck_parity.py` (new) | Runs the reference and our stack on the same script; computes metrics; writes a JSON and markdown report |
@@ -117,6 +117,9 @@ and BAM (via the mujoco-sim worktree's environment), `viam:mlmodel:onnx-cpu` 0.2
   Update the docstring to say why: velstand, the walk policy, was trained on the ground-contact model,
   `infer_policy.py` loads it, and it has trunk and head collision. Keep the comment stripping:
   `scene.xml` also has the old STAND commented out (line 26).
+
+  In `duck_stand_check.py`, update only the docstring sentence about the duck sinking through the
+  floor: with the ground-contact model it falls onto the floor. The assertions stay.
 
 - [ ] **Step 2: Export and check the keyframe.**
 
@@ -190,7 +193,9 @@ from pathlib import Path
 REPO = "pollen-robotics/microduck-policies"
 REVISION = "236d1835b03ac7b45d962efbf2fe3a6940206112"
 FILE = "velstand.onnx"
-SHA256 = "<fill in: the full sha256 of velstand.onnx at REVISION; the research recorded it as starting ce894d30>"
+SHA256 = "ce894d30b3343036d499bfac1102bdaa58d59a21c1b58401ecb70fb6a2f63e0a"  # HF x-linked-etag at REVISION
+DEFAULT_POSE = [0.0, -0.0873, -0.4579, -0.0049, 0.4530, 0.3491, 0.3491, 0.0, 0.0,
+                0.0, 0.0873, 0.4579, 0.0049, -0.4530]  # infer_policy.py:126-141
 JOINTS = [
     "left_hip_yaw", "left_hip_roll", "left_hip_pitch", "left_knee", "left_ankle",
     "neck_pitch", "head_pitch", "head_yaw", "head_roll",
@@ -214,7 +219,11 @@ def main(duck_sim: Path, out: Path) -> None:
     meta = session.get_modelmeta().custom_metadata_map
     (inp,), (outp,) = session.get_inputs(), session.get_outputs()
     assert (inp.name, list(inp.shape), outp.name, list(outp.shape)) == ("obs", [1, 61], "actions", [1, 14])
-    default_pose = [float(v) for v in meta["default_joint_pos"].split(",")]
+    # The metadata keeps 3 decimals; infer_policy.py:126-141 has 4. Write infer_policy's, so both sides
+    # of the parity check use the same pose, and check the metadata agrees within its rounding.
+    default_pose = DEFAULT_POSE
+    meta_pose = [float(v) for v in meta["default_joint_pos"].split(",")]
+    assert all(abs(a - b) <= 6e-4 for a, b in zip(meta_pose, DEFAULT_POSE)), meta_pose
     joint_names = meta["joint_names"].split(",")
     assert joint_names == JOINTS, joint_names
     action_scale = float(meta["action_scale"])
@@ -256,10 +265,8 @@ if __name__ == "__main__":
     main(Path(sys.argv[1]), Path(sys.argv[2]) if len(sys.argv) > 2 else Path("dist/microduck-walk"))
 ```
 
-Fill in `SHA256` before the first run. Download the file once with `curl -sL <url> | shasum -a 256`
-and check it starts `ce894d30`. Also check the metadata keys (`default_joint_pos`, `joint_names`,
-`action_scale`) against the real file: print `session.get_modelmeta().custom_metadata_map` once and
-adapt the key names if they differ.
+The SHA256 and the metadata keys (`default_joint_pos`, `joint_names`, `action_scale`) were
+verified against the real file in plan review.
 
 - [ ] **Step 2: Run it.**
 
@@ -267,8 +274,8 @@ adapt the key names if they differ.
 uv run --project /Users/nick.hehr/src/viam-mujoco-sim-floating --with onnxruntime python scripts/fetch_walk_policy.py dist/duck-sim
 ```
 
-Expected: it prints the default pose, which must equal the plan's DEFAULT_POSE to four decimals, and
-action scale 1.0.
+Expected: it prints the default pose (`infer_policy`'s 4-decimal values, after the metadata check
+passes) and action scale 1.0.
 
 - [ ] **Step 3: Commit** (the package itself stays in `dist/`; it's uploaded in Task 8):
 
@@ -400,9 +407,12 @@ from pathlib import Path
 
 import numpy as np
 
-# The command script (spec unit 5): (seconds, vx, vy, wz)
-SCRIPT = [(2.0, 0.0, 0.0, 0.0), (8.0, 0.15, 0.0, 0.0), (5.0, 0.0, 0.0, 0.5), (5.0, 0.0, 0.0, -0.5),
-          (4.0, 0.0, 0.0, 0.0), (6.0, -0.1, 0.0, 0.0)]
+# The command script: (seconds, vx, vy, wz). velstand has a dead zone (Pollen's docs/velstand_policy.md,
+# microduck_velstand_env_cfg.py:344-380): measured on infer_policy's own scene, vx 0.15-0.2, |vx| <= 0.3
+# backwards, and wz +-0.5 all stand still; vx 0.4 -> ~0.17 m/s, vx -0.4 -> ~-0.14, vx 0.4 + wz +-0.6 ->
+# ~+-0.38 rad/s. So every moving segment uses values that walk (spec, milestone 2 decisions).
+SCRIPT = [(2.0, 0.0, 0.0, 0.0), (8.0, 0.4, 0.0, 0.0), (5.0, 0.4, 0.0, 0.6), (5.0, 0.4, 0.0, -0.6),
+          (4.0, 0.0, 0.0, 0.0), (6.0, -0.4, 0.0, 0.0)]
 DURATION = sum(seg[0] for seg in SCRIPT)
 TRUNK_Z = 0.125  # infer_policy.py:1376-1383
 
@@ -421,7 +431,15 @@ def run(checkout: Path, duck_xml: Path, onnx: Path, golden: Path | None = None) 
     from infer_policy import BAM_VIN_MIN, PolicyInference, load_bam_model, load_mujoco_with_bam
 
     bam_model = load_bam_model(200.0, 7.4, None)
-    model, data, bam_ctrl, _ = load_mujoco_with_bam(str(duck_xml), bam_model, 0.005, 0.1, BAM_VIN_MIN)
+    # duck.xml has no floor (mujoco-sim adds one when it builds the scene): wrap it with the same plane,
+    # next to duck.xml so the include and meshdir resolve, and remove the wrapper so it never ships.
+    scene = duck_xml.parent / "_reference_scene.xml"
+    scene.write_text('<mujoco model="reference">\n  <include file="duck.xml"/>\n  <worldbody>\n'
+                     '    <geom name="floor" type="plane" size="0 0 0.05"/>\n  </worldbody>\n</mujoco>\n')
+    try:
+        model, data, bam_ctrl, _ = load_mujoco_with_bam(str(scene), bam_model, 0.005, 0.1, BAM_VIN_MIN)
+    finally:
+        scene.unlink()
     policy = PolicyInference(model, data, walking_onnx_path=str(onnx), bam_ctrl=bam_ctrl,
                              use_projected_gravity=True, new_cmd_obs=True)
     free = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "trunk_base_freejoint")
@@ -504,6 +522,14 @@ Notes for the implementer:
 - `load_bam_model(kp_fw, vin, max_current)` and
   `load_mujoco_with_bam(xml, bam_model, timestep, vin_drop_gain, vin_min)` are at
   `infer_policy.py:49-104`.
+- The floor wrapper was checked against Pollen's own `scene.xml`: x = 1.668 at t = 10 s at vx 0.4,
+  an exact match.
+- Print `model.opt` (integrator, cone, impratio, iterations, tolerance) and compare it once with the
+  scene mujoco-sim builds. To get that, read `sim.model.opt` from a `SimManager` built the way
+  `duck_stand_check.py` builds it. Record any difference in the commit message: it is a parity
+  difference besides real-time stepping. mujoco-sim uses `implicitfast`. If the reference differs,
+  set `model.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST` after loading, so the only
+  remaining difference is the stack under test (spec, risks).
 
 - [ ] **Step 2: Run it** (once, creating the golden file and the safety stats):
 
@@ -780,7 +806,7 @@ class PolicyLoop:
         self.action_bound = float(safety.get("action_bound", 5.0))
         self.max_step = float(safety.get("max_step_rad", 0.5))
         self.command, self.command_clipped = Command(), False
-        self.ticks, self.late, self.reason, self.last_obs = 0, 0, None, None
+        self.ticks, self.late, self.reason, self.last_obs, self.t0, self.t_end = 0, 0, None, None, None, None
         self.tick_ms: deque[float] = deque(maxlen=500)
 
     def set_command(self, command: Command) -> None:
@@ -805,7 +831,7 @@ class PolicyLoop:
 
     async def run(self, max_ticks: int | None = None) -> str:
         try:
-            await self._run(max_ticks)
+            await self._run_timed(max_ticks)
             self.reason = "max_ticks"
         except Stop as stop:
             self.reason = stop.reason
@@ -814,20 +840,30 @@ class PolicyLoop:
         except asyncio.CancelledError:
             self.reason = "stopped"
             raise
+        except Exception as error:  # e.g. a gRPC error from the duck or the mlmodel service
+            self.reason = f"error: {error}"
         return self.reason
+
+    async def _run_timed(self, max_ticks: int | None) -> None:
+        try:
+            await self._run(max_ticks)
+        finally:
+            self.t_end = time.monotonic()
 
     async def _run(self, max_ticks: int | None) -> None:
         lim = self.limits
         snap: Snapshot = await self._call(self.io.torque(True))
         generation, prev_t = snap.generation, snap.t
-        # Ramp from where the duck is to the default pose (it starts there when homed at STAND).
-        start, n = np.asarray(snap.q, float), max(1, round(lim.ramp_s / self.dt))
+        # Ramp from where the duck is to the default pose. After a reset at STAND it's already there, and
+        # the ramp is skipped: holding the pose with no policy, the duck tips over within ~1.5 s (plan review).
+        start = np.asarray(snap.q, float)
+        n = 0 if np.abs(start - self.default).max() < 0.05 else max(1, round(lim.ramp_s / self.dt))
         for i in range(1, n + 1):
             await self._call(self.io.write((start + (self.default - start) * i / n).tolist()))
             await asyncio.sleep(self.dt)
         prev_target, last_action = self.default.copy(), np.zeros(14)
         fall, late_hist, late_streak = 0, deque(maxlen=lim.late_window), 0
-        t0 = time.monotonic()
+        t0 = self.t0 = time.monotonic()
         while max_ticks is None or self.ticks < max_ticks:
             deadline = t0 + (self.ticks + 1) * self.dt
             tick_start = time.monotonic()
@@ -864,7 +900,9 @@ class PolicyLoop:
     def status(self) -> dict:
         ms = sorted(self.tick_ms)
         pct = (lambda p: round(ms[min(len(ms) - 1, int(p * len(ms)))], 2)) if ms else (lambda p: None)
-        return {"ticks": self.ticks, "late": self.late, "tick_ms_p50": pct(0.5), "tick_ms_p99": pct(0.99),
+        run_s = None if self.t0 is None else round((self.t_end or time.monotonic()) - self.t0, 3)
+        return {"ticks": self.ticks, "late": self.late, "run_s": run_s,  # run_s: since the loop's t0 (after any ramp)
+                "tick_ms_p50": pct(0.5), "tick_ms_p99": pct(0.99),
                 "reason": self.reason, "command": [self.command.vx, self.command.vy, self.command.wz],
                 "command_clipped": self.command_clipped}
 ```
@@ -1044,9 +1082,12 @@ class DuckPolicy(Generic, EasyResource):
     - module id `devrel:duck-policy`, visibility `private`;
     - model `devrel:duck-policy:controller`, api `rdk:service:generic`;
     - entrypoint `run.sh`.
-  - `duck_policy/run.sh`: copy `policy_controller/run.sh`, run `python -m duck_policy.main`, and `cd`
-    to the repo root (the parent of `duck_policy/`) so the package imports when the module runs locally
-    from this checkout.
+  - `duck_policy/run.sh`: copy `policy_controller/run.sh` and keep its `cd "$(dirname "$0")"`, so the
+    module's `.venv` and `requirements.txt` stay inside `duck_policy/`. Never point that `.venv` logic
+    at the repo root: `rm -rf .venv` would delete the repo's mjlab environment. Before the `exec`, add
+    `export PYTHONPATH="$(cd .. && pwd)${PYTHONPATH:+:$PYTHONPATH}"` so `duck_policy` imports from this
+    checkout. Then run `exec .venv/bin/python -m duck_policy.main "$@"`. Add `duck_policy/.venv/` and
+    `duck_policy/bin/` to `.gitignore`.
   - `duck_policy/requirements.txt`: `viam-sdk>=0.85`, `numpy`, `packaging`.
 
   Make `run.sh` executable. Don't add a module upload here: the preview machine runs it locally
@@ -1104,15 +1145,21 @@ If `--type=ml_model` needs extra flags (model framework or type), check
   5. Confirm onnx-cpu 0.2.2 started on darwin/arm64. That is also the check that its release ships
      that platform.
 
-- [ ] **Step 4: Smoke test** (through the MCP `run_docommand`, or a short script with `cell.connect`):
+- [ ] **Step 4: Smoke test.** Write `scripts/duck_smoke.py`, a short `cell.connect` script (PEP 723
+  header, as `scratchpad/microduck-preview/actuate.py` does), not separate MCP calls. The policy must
+  take over within a few ticks of `play`: the duck tips over by about 1.5 s without it, and a `start`
+  while paused stops at once with "stale_state".
   1. `sim-world` pause, then reset.
-  2. `walker` `{"command": "start"}`, then `sim-world` play.
-  3. After 10 s, `walker` status should be `running`, with about 450–500 ticks and
+  2. `walker` `set_command` with zeros.
+  3. `sim-world` play, then immediately `walker` `{"command": "start"}`.
+  4. After 10 s, `walker` status should be `running`, with about 450–500 ticks and
      `tick_ms_p99 < 20`.
-  4. `duck` `{"io": {}}` should show gravity z < -0.95: it stands at a zero command.
-  5. `walker` `{"command": "set_command", "vx": 0.15}`. After 5 s, the trunk x has increased by more
-     than 0.3 m.
-  6. `walker` stop, `sim-world` pause.
+  5. `duck` `{"io": {}}` should show gravity z < -0.95: it stands at a zero command.
+  6. `walker` `{"command": "set_command", "vx": 0.4}` (lower forward speeds are in velstand's dead
+     zone). After 5 s, the trunk x has increased by more than 0.3 m; about 0.85 m is expected.
+  7. `walker` stop, `sim-world` pause.
+
+  Commit `scripts/duck_smoke.py` with the config.
 
   Save a `GetImages` from `overview` mid-walk as evidence (note the saved path).
 
@@ -1189,9 +1236,11 @@ def tracking(samples: list[dict]) -> dict:
         if any(0 <= t_mid - edge < SETTLE_S for edge in [0.0, *bounds]):
             continue
         ya, yb = yaw(a["trunk_quat_wxyz"]), yaw(b["trunk_quat_wxyz"])
+        dyaw = math.atan2(math.sin(yb - ya), math.cos(yb - ya))
+        ym = ya + dyaw / 2  # mid-interval heading: exact for a constant-curvature arc to first order
         dx, dy = b["trunk_pos"][0] - a["trunk_pos"][0], b["trunk_pos"][1] - a["trunk_pos"][1]
-        vx = (math.cos(ya) * dx + math.sin(ya) * dy) / dt
-        wz = math.atan2(math.sin(yb - ya), math.cos(yb - ya)) / dt
+        vx = (math.cos(ym) * dx + math.sin(ym) * dy) / dt
+        wz = dyaw / dt
         cvx, _, cwz = command_at(t_mid)
         err_vx.append(vx - cvx)
         err_wz.append(wz - cwz)
@@ -1218,9 +1267,9 @@ async def ours(cell_json: Path, out: Path, episodes: int) -> None:
             await world.do_command({"command": "pause"})
             await world.do_command({"command": "reset"})
             await walker.do_command({"command": "set_command", "vx": 0, "vy": 0, "wz": 0})
-            await walker.do_command({"command": "start"})
-            before = await world.do_command({"command": "status"})
+            before = await world.do_command({"command": "status"})  # reset zeroed slips
             await world.do_command({"command": "play"})
+            await walker.do_command({"command": "start"})  # right after play: no ramp at STAND, takes over in a tick
             first = await duck.do_command({"io": {}})
             t0, samples, last_cmd = float(first["t"]), [], None
             while True:
@@ -1235,7 +1284,7 @@ async def ours(cell_json: Path, out: Path, episodes: int) -> None:
                 if not samples or t - samples[-1]["t"] >= 0.1 - 1e-6:
                     samples.append({"t": round(t, 4), "trunk_pos": s["trunk_pos"],
                                     "trunk_quat_wxyz": s["trunk_quat_wxyz"], "gravity": s["gravity"]})
-                await asyncio.sleep(0.02)
+                await asyncio.sleep(0.05)  # 20 Hz is enough for 0.1 s samples and spares the sim thread
             status = await walker.do_command({"command": "status"})
             await walker.do_command({"command": "stop"})
             after = await world.do_command({"command": "status"})
@@ -1261,7 +1310,8 @@ def report(ref_path: Path, ours_path: Path, md: Path) -> None:
     ticks = sum(e["walker"].get("ticks", 0) for e in clean)
     late = sum(e["walker"].get("late", 0) for e in clean)
     p99 = max((e["walker"].get("tick_ms_p99") or 0) for e in clean) if clean else float("nan")
-    rate = ticks / (len(clean) * DURATION) if clean else 0.0
+    run_s = sum(e["walker"].get("run_s") or 0 for e in clean)
+    rate = ticks / run_s if run_s else 0.0  # the loop's own run time, not the episode's start/stop overhead
     checks = {
         "slip_free >= 18/20": len(clean) >= 18,
         "falls": ours_falls <= ref_falls + 1,
@@ -1304,10 +1354,16 @@ Notes for the implementer:
   mujoco and infer_policy only inside `run()`, which it already does.
 - **Smoke test first:** run `ours` with `--episodes 1` before the full run.
 
-- [ ] **Step 2: Add a unit test for `tracking`/`fell`** in `tests/test_duck_parity.py`. Synthesize
-  samples of a trunk moving at exactly the commanded vx and wz along the script, and assert that both
-  RMSEs are below 1e-6 and `fell` is False. Then tilt one sample's gravity, assert `fell` is True,
-  and run it.
+- [ ] **Step 2: Add a unit test for `tracking`/`fell`** in `tests/test_duck_parity.py`.
+  1. Synthesize samples every 0.1 s of a trunk following the commanded twist exactly. Integrate the
+     unicycle in closed form per interval: for wz ≠ 0, the arc is radius vx/wz; for wz = 0, a straight
+     line.
+  2. Assert both RMSEs are below 1e-3. The mid-interval heading is a first-order approximation, so not
+     1e-6.
+  3. Assert `fell` is False.
+  4. Tilt one sample's gravity to `[0.9, 0, -0.3]` and assert `fell` is True.
+  5. Run it with `uv run pytest tests/test_duck_parity.py -q`. `duck_parity.py` imports
+     `duck_reference` only for the script constants, so the test needs neither mujoco nor viam.
 - [ ] **Step 3: Commit** with message `feat: walk parity harness (reference vs duck-policy on Viam; falls, tracking, timing)`.
 
 ---
@@ -1344,6 +1400,6 @@ uv run scripts/duck_parity.py report dist/duck-reference.json dist/duck-ours.jso
 - The `duck_policy` tests (obs golden, loop stop conditions, service) and the existing suite pass.
 - duck-sim 0.2.0 and microduck-walk 0.1.0 are in DevRelDemos.
 - The preview machine runs `duck-sim-machine.json`: the duck stands at a zero command and walks at
-  vx 0.15.
+  vx 0.4. Lower forward speeds are in velstand's dead zone.
 - The parity report exists with a verdict. PASS is the goal; a FAIL with a diagnosed cause is still a
   result.
