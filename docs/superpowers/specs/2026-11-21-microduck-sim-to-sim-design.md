@@ -105,11 +105,32 @@ At MjSpec build time, the robot mirrors `infer_policy.py`'s `load_mujoco_with_ba
 - on its joint, `damping = 0`, `frictionloss = 0`, and `solref_friction` / `solimp_friction` set to
   BAM's stiff values `(-5e4, -2e2)` and `(0.99, 0.9999, 0.001, 0.5, 2.0)`.
 
-After compile, it creates `MujocoController(bam_model, names, model, data, vin_drop_gain, vin_min)`
-and calls `reset(data.qpos)`, which sets `q_target` to the current pose. It registers a wrapper that
-calls `controller.update()` as a step callback (callbacks take `dt`; `update()` takes no arguments).
-Targets go through `set_q_target`. Without this rewrite, BAM's torques would feed the MJCF's position
-actuators and the physics would be silently wrong. A unit test locks it (see Testing).
+The robot registers one step callback, a wrapper (callbacks take `dt`; `update()` takes no
+arguments). On each step it:
+
+1. Compares `sim.generation` with the generation it last bound to. mujoco-sim recompiles `model` and
+   `data` on every `set_contribution`, for example each limb arm added after the robot, and runs
+   `init` only for new contributions. So a controller made once would keep the dead arrays, and the
+   armature on the dead model.
+2. On a change, or the first step, it rebinds:
+   - creates `MujocoController(bam_model, names, sim.model, sim.data, vin_drop_gain, vin_min)`, which
+     also sets the armature on the new model;
+   - calls `reset(data.qpos)`, so `q_target` holds the current pose and the voltage-sag state is
+     cleared;
+   - keeps the torque on/off flag, which lives on the robot handle.
+
+   Because this happens on the first step after the rebuild, it follows every contribution's `init`,
+   including an arm's `qpos = home`.
+3. Calls `controller.update()`, and if torque is off, zeroes `ctrl` for the BAM actuators.
+
+Targets go through `set_q_target` (present in BAM's `mujoco.py`) or the `q_target` array, as
+`infer_policy.py` does. Rebuilds happen at configure time, so a mid-run rebuild is not supported. The
+loop's stale-state check stops it if one happens, because sim time is re-anchored.
+
+An arm's `init` still writes `data.ctrl = home` under BAM. That is harmless, because `update()`
+overwrites `ctrl` before the first `mj_step`. Without the actuator rewrite, BAM's torques would feed
+the MJCF's position actuators and the physics would be silently wrong. Unit tests lock both the
+rewrite and the rebind (see Testing).
 - Without `actuators`, the file's own actuators run as today.
 - `better-actuator-models` (numpy and colorama only) becomes a dependency, from Rhoban's git branch
   `mjlab_frictionloss` at the commit `microduck_rl` locks.
@@ -210,7 +231,8 @@ gRPC round trips add some in sim, and parity shows whether injection is needed.
   land at arbitrary sim instants, with a varying number of physics steps between them. The 1.25×
   RMSE margin is meant to absorb that jitter. The harness logs the world's `real_time_factor` and
   `slips` for every episode, and an episode with any slip is reported separately rather than
-  counted.
+  counted. At least 18 of the 20 episodes must be slip-free for the gate to be judged at all.
+  Otherwise the result is "machine too slow", not pass or fail.
 - **Ours.** The same script sent to duck-policy's `set_command` on the Viam machine. Trunk velocity
   is logged from `io`.
 - **Metrics.** Falls per 20 episodes; velocity-tracking RMSE over the commanded segments (body-frame
@@ -260,7 +282,12 @@ Each milestone gets its own implementation plan.
     for `robot_walk.xml`;
   - a few hundred steps of mujoco-sim with BAM, from the same state and targets, track
     `load_mujoco_with_bam` plus `MujocoController` run directly, to float tolerance;
-  - `io` returns state from one `t`, and torque off makes the duck limp;
+  - adding a limb arm after the robot, which forces a rebuild, leaves BAM bound to the new
+    `model`/`data` (armature set, nonzero `ctrl` under load) with `q_target` equal to the post-`init`
+    pose;
+  - `io` returns state from one `t`;
+  - torque off makes the duck collapse. BAM's friction still acts on the back-driven motors, so the
+    test expects a slowed collapse, not a free fall;
   - with `actuators` set, arm motion errors and no arm writes `ctrl`;
   - the existing ALOHA and TIAGo tests pass unchanged.
 - **duck-policy:**
