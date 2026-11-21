@@ -4,6 +4,17 @@
       "type": "local",
       "name": "mujoco-sim",
       "executable_path": "/Users/nick.hehr/src/viam-mujoco-sim-floating/run.sh"
+    },
+    {
+      "type": "registry",
+      "name": "viam_onnx-cpu",
+      "module_id": "viam:onnx-cpu",
+      "version": "0.2.2"
+    },
+    {
+      "type": "local",
+      "name": "duck-policy",
+      "executable_path": "/Users/nick.hehr/src/viam-rslrl-policy-training/duck_policy/run.sh"
     }
   ],
   "packages": [
@@ -11,6 +22,12 @@
       "name": "duck-sim",
       "package": "16518049-9dd3-479f-9644-c5d112aa42d8/duck-sim",
       "type": "archive",
+      "version": "0.2.0"
+    },
+    {
+      "name": "microduck-walk",
+      "package": "16518049-9dd3-479f-9644-c5d112aa42d8/microduck-walk",
+      "type": "ml_model",
       "version": "0.1.0"
     }
   ],
@@ -28,7 +45,12 @@
       "api": "rdk:component:generic",
       "model": "viam-labs:mujoco-sim:robot",
       "frame": {
-        "parent": "world"
+        "parent": "world",
+        "translation": {
+          "x": 0,
+          "y": 0,
+          "z": 5
+        }
       },
       "attributes": {
         "world": "sim-world",
@@ -141,6 +163,26 @@
         "width": 640,
         "height": 480,
         "near_m": 0.005
+      }
+    }
+  ],
+  "services": [
+    {
+      "name": "walk-model",
+      "api": "rdk:service:mlmodel",
+      "model": "viam:mlmodel:onnx-cpu",
+      "attributes": {
+        "model_path": "${packages.ml_model.microduck-walk}/policy.onnx"
+      }
+    },
+    {
+      "name": "walker",
+      "api": "rdk:service:generic",
+      "model": "devrel:duck-policy:controller",
+      "attributes": {
+        "duck": "duck",
+        "mlmodel": "walk-model",
+        "package_dir": "${packages.ml_model.microduck-walk}"
       }
     }
   ]
