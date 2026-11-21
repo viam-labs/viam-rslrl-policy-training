@@ -156,6 +156,10 @@ Response:
 `torque` in the request may be omitted or null, which leaves it unchanged; the response reports
 the current flag.
 
+Wire types: viam-sdk decodes a protobuf null as int `0`, so the DoCommand treats an exact int 0 as
+null. Numbers come back as floats, so `generation` reaches clients as e.g. `3.0`, and duck-policy
+compares `int(generation)`.
+
 Freshness: `io` reads state after the last physics step. Pollen's `infer_policy.py` reads sensors
 and `xquat` straight after `mj_step`, so its values lag by one 5 ms substep, about 0.007 on gyro
 and gravity at high velocity. That's below sensor noise, so it isn't a parity concern, but don't
