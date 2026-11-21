@@ -179,6 +179,40 @@ compare individual ticks bit for bit.
 - **Scope.** `io` requires `actuators` (unit 2). Without BAM there is no `io`; PD-only duck physics
   isn't a goal.
 
+### Milestone 2 decisions (2026-11-21, from research before planning)
+
+These override the text below where they conflict.
+
+- **Policy.** The walk policy is `velstand.onnx` from HF `pollen-robotics/microduck-policies` at
+  revision `236d1835b03ac7b45d962efbf2fe3a6940206112` (Apache-2.0). The repo's manifest puts it in
+  slot `walk`, and it walks and stands at a zero command. The ONNX maps input `obs` [1,61] to output
+  `actions` [1,14], and its metadata carries the default pose and action scale 1.0.
+- **Robot model.** velstand was trained on the ground-contact model, and `infer_policy.py` loads
+  `scene.xml` (`robot_groundcontact.xml`) by default. So `duck-sim` 0.2.0 switches from
+  `robot_walk.xml` to `robot_groundcontact.xml`. That model has trunk and head collision, so a fallen
+  duck no longer sinks through the floor.
+- **Module location.** duck-policy lives in this repo as the `duck_policy/` package, next to
+  `policy_controller/`.
+- **Tick order.** Each tick reads state (`io` with no targets), runs inference, then writes targets.
+  That is two `io` calls a tick, about 2 ms each. It matches the reference's order: observe, infer,
+  apply, then step. The single combined exchange described above would add a 20 ms lag.
+- **Reference start.** The reference places the trunk at z 0.125 (`infer_policy.py:1376-1383`), so
+  the duck's robot frame gets a 5 mm z offset. The keyframe's trunk z is 0.12.
+- **Reference episodes.** The reference is deterministic, so its 20 episodes are identical. The
+  start-yaw variation is dropped: on our side, changing yaw would rebuild the scene, and that changes
+  `generation`. Our side's variation comes from real-time jitter.
+- **Where it runs.** milestone 2 runs on the `microduck-preview` machine (local viam-server) with
+  duck-policy as a local module, not a cloud simulation. That keeps the measured `io` round trip
+  (2 ms p50) representative.
+- **Reference environment.** The reference runs in the mujoco-sim worktree's environment (MuJoCo 4,
+  BAM) plus onnxruntime, so both sides use the same MuJoCo build.
+- **What Pollen's robot daemon does differently.** It uses action scale 0.9 and low-pass filters
+  (0.5 on the head, 0.7 on the legs). That is the robot's runtime, not `infer_policy.py`, so
+  milestone 2 matches `infer_policy.py`. Revisit for the real robot.
+- **Known differences from training** (they apply equally to both sides): training adds observation
+  noise and delays (joint velocity lags one control step), IMU misalignment, encoder bias, backlash,
+  and rough terrain. Neither side models these.
+
 ### 4. duck-policy module (new; directory and repo chosen in the milestone 2 plan)
 
 Python, built like `devrel:rl-policy` (uv-built venv, bounded calls, a `generic` service with
