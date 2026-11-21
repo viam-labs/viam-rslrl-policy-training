@@ -149,8 +149,17 @@ Response:
 
 ```json
 {"t": 12.34, "q": [14], "dq": [14], "gyro": [3], "gravity": [3],
- "trunk_pos": [3], "trunk_quat_wxyz": [4], "joints": [14 names], "generation": 3}
+ "trunk_pos": [3], "trunk_quat_wxyz": [4], "joints": [14 names], "generation": 3,
+ "torque": true}
 ```
+
+`torque` in the request may be omitted or null, which leaves it unchanged; the response reports
+the current flag.
+
+Freshness: `io` reads state after the last physics step. Pollen's `infer_policy.py` reads sensors
+and `xquat` straight after `mj_step`, so its values lag by one 5 ms substep, about 0.007 on gyro
+and gravity at high velocity. That's below sensor noise, so it isn't a parity concern, but don't
+compare individual ticks bit for bit.
 
 - **One instant.** It runs on the sim thread. Targets are applied, then the state is read in the same
   task, between physics steps.
