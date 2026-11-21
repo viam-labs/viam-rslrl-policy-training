@@ -30,7 +30,12 @@ preview machine.
 
 - **Training from Python** (`ML/scripts/train.py:25-47`):
   - Call `from mjlab.scripts.train import TrainConfig, run_train`, then
-    `run_train(task_id, TrainConfig(env, agent, video, video_length, video_interval, log_root, gpu_ids), log_dir)`.
+    `run_train(task_id, TrainConfig(env=…, agent=…, video=…, video_length=…, video_interval=…, gpu_ids=None), log_dir)`.
+  - mjlab 1.3.0's `TrainConfig` has **no `log_root`**, unlike the peg-insert mjlab@6ab9846; `run_train`
+    writes into `log_dir`.
+  - Its fields are env, agent, registry_name, video, video_length, video_interval, enable_nan_guard,
+    torchrunx_log_dir, wandb_run_path, wandb_checkpoint_name and gpu_ids.
+  - `run_train` picks CPU unless `CUDA_VISIBLE_DEVICES` is set, so `set_visible_devices` must come first.
   - Before that, import `mjlab.tasks`: it loads the `mjlab.tasks` entry point, which registers
     microduck's tasks (`MD/pyproject.toml:40-41`).
   - `load_env_cfg(TASK)` and `load_rl_cfg(TASK)` come from the mjlab task registry. Read
@@ -101,11 +106,29 @@ preview machine.
 **Files:**
 - Create: `model/harness.py`
 - Move: `rl_insert/task/viam_upload.py` → `model/viam_upload.py` (with `git mv`), then recreate
-  `rl_insert/task/viam_upload.py` as `from model.viam_upload import *  # noqa: F401,F403` plus
-  `from model.viam_upload import upload_video, upload_video_async  # noqa: F401`
+  `rl_insert/task/viam_upload.py` as a **module alias**, not a star re-export.
+  `tests/test_training_runtime.py` monkeypatches `viam_upload.upload_video` and
+  `viam_upload.ViamClient` through `from rl_insert.task import viam_upload`; a star re-export would be
+  a separate module object, and the patches wouldn't reach it. The alias:
+  ```python
+  """Moved to model/viam_upload.py; this name stays an alias of that module (tests patch through it)."""
+  import sys
+
+  from model import viam_upload as _m
+
+  sys.modules[__name__] = _m
+  ```
+  `harness.VideoUploader.sweep()` must keep importing `upload_video` **at call time**
+  (`from model.viam_upload import upload_video` inside `sweep`), so patches applied after import
+  still take effect.
 - Modify: `model/training.py`
 
-- [ ] **Step 1: Baseline.** `uv run pytest -q`: record the pass count (expected 106 passed, 1 skipped).
+- [ ] **Step 1: Baseline.** `uv run pytest -q`: record the pass count (expected 108 passed, 1 skipped).
+
+- [ ] **Step 1b: Stop `build.sh` deleting `dist/`.** Its `rm -rf dist` would wipe milestone 2's
+  artifacts (`dist/microduck-walk`, `dist/duck-sim`, `duck-reference.json`, `duck-ours.json`), which
+  later tasks need. Change that line to
+  `rm -rf dist/stage dist/rl-insert-train.tar.gz && mkdir -p dist/stage`.
 - [ ] **Step 2: Move the generic code into `model/harness.py`, unchanged in behaviour.** Move:
   - `unquote`
   - `GL_TEST` and `select_gl`
@@ -123,8 +146,23 @@ preview machine.
   - `TAGS = ["rl-insert"]`, passed into `VideoUploader(..., tags=TAGS, run_name=args.run_name,
     upload_part_id=args.upload_part_id, upload_dataset_id=args.upload_dataset_id)`.
 
-  Grep `tests/` for `training._device`, `training._check`, `VideoUploader(` and
-  `rl_insert.task.viam_upload` monkeypatches, and keep every one working.
+  Keep peg-insert's old constructor working for its tests. Two tests in
+  `tests/test_training_runtime.py` call `training.VideoUploader(tmp_path, 24, args, poll_s=...)`
+  with a positional Namespace, so define a thin subclass in `model/training.py`:
+  ```python
+  class VideoUploader(harness.VideoUploader):
+      """Peg-insert's signature (args Namespace) over the shared uploader."""
+
+      def __init__(self, folder, steps_per_iter, args, poll_s: float = 15.0):
+          super().__init__(folder, steps_per_iter, tags=TAGS, run_name=args.run_name,
+                           upload_part_id=args.upload_part_id, upload_dataset_id=args.upload_dataset_id, poll_s=poll_s)
+  ```
+  Use it in `train()` unchanged (`VideoUploader(log_dir / "videos" / "train", agent.num_steps_per_env, args)`).
+  Keep `import os` in `training.py` (tests patch `training.os`).
+
+  Grep `tests/` for `training._device`, `training._check`, `VideoUploader(`, `viam_upload`,
+  `training.set_visible_devices`, `training.write_package` and `training.UPLOAD_JOIN_TIMEOUT`, and
+  keep every one working.
 - [ ] **Step 4:** `uv run pytest -q` passes with the same count as Step 1. `./build.sh` still
   builds `dist/rl-insert-train.tar.gz`, and its file list includes `model/harness.py` and
   `model/viam_upload.py` (`find_packages` picks them up).
@@ -287,6 +325,8 @@ from .package import build_config, scalar_metrics, verify_onnx, write_json
 logger = logging.getLogger("microduck-train")
 TASK = "Mjlab-Velocity-Flat-MicroDuck"
 TAGS = ["microduck"]
+DEFAULT_POSE = [0.0, -0.0873, -0.4579, -0.0049, 0.4530, 0.3491, 0.3491, 0.0, 0.0,
+                0.0, 0.0873, 0.4579, 0.0049, -0.4530]  # infer_policy.py:126-141
 UPLOAD_JOIN_TIMEOUT = 60.0
 
 
@@ -310,7 +350,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def _cfgs(args):
     import mjlab.tasks  # noqa: F401  (loads the mjlab.tasks entry points: registers microduck's tasks)
-    from mjlab.tasks.registry import load_env_cfg, load_rl_cfg  # check the real names in mjlab 1.3.0
+    from mjlab.tasks.registry import load_env_cfg, load_rl_cfg  # verified in mjlab 1.3.0 (return deep copies)
 
     env_cfg = load_env_cfg(TASK)
     env_cfg.scene.num_envs = args.num_envs
@@ -332,7 +372,7 @@ def _last_checkpoint(log_dir: Path) -> Path:
 
 
 def export_and_verify(ckpt: Path, onnx_out: Path) -> dict:
-    from mjlab_microduck.export import ExportConfig, run_export  # check the real names at MD/.../export.py:90
+    from mjlab_microduck.export import ExportConfig, run_export  # verified at MD/.../export.py:90
 
     run_export(TASK, ExportConfig(checkpoint_file=str(ckpt), num_envs=1, onnx_file=str(onnx_out)))
     joints = json.loads(json.dumps(_policy_joints()))
@@ -350,7 +390,12 @@ def write_package(out: Path, log_dir: Path, env_cfg, agent) -> None:
 
     ckpt = _last_checkpoint(log_dir)
     meta = export_and_verify(ckpt, out / "policy.onnx")
-    default_pose = [float(v) for v in meta["default_joint_pos"].split(",")]
+    # The metadata keeps 3 decimals; write full precision (infer_policy.py:126-141 / the robot's STAND init state,
+    # which the reference side uses) and check the metadata agrees within its rounding.
+    default_pose = DEFAULT_POSE
+    meta_pose = [float(v) for v in meta["default_joint_pos"].split(",")]
+    if any(abs(a - b) > 6e-4 for a, b in zip(meta_pose, DEFAULT_POSE)):
+        raise ValueError(f"ONNX default_joint_pos {meta_pose} != DEFAULT_POSE")
     # Joint limits: the training robot's compiled model (env_cfg.scene's robot entity spec). If that's awkward
     # to reach, compile microduck's robot_walk.xml directly (mjlab_microduck/robot/microduck/robot_walk.xml).
     xml = Path(__import__("mjlab_microduck").__file__).parent / "robot" / "microduck" / "robot_walk.xml"
@@ -381,7 +426,7 @@ def train(args, gl: dict) -> None:
     video = gl["backend"] is not None and args.video_every_iters > 0
     cfg = TrainConfig(env=env_cfg, agent=agent, video=video, video_length=args.video_length,
                       video_interval=max(1, args.video_every_iters) * agent.num_steps_per_env,
-                      log_root=str(log_dir.parent), gpu_ids=None)
+                      gpu_ids=None)  # mjlab 1.3.0's TrainConfig has no log_root: run_train writes into log_dir
     set_visible_devices(device().startswith("cuda"))
     uploader = VideoUploader(log_dir / "videos" / "train", agent.num_steps_per_env, tags=TAGS, run_name=args.run_name,
                              upload_part_id=args.upload_part_id, upload_dataset_id=args.upload_dataset_id)
@@ -431,8 +476,7 @@ def probe(args, gl: dict) -> None:
         video = gl["backend"] is not None
         t0 = time.monotonic()
         run_train(TASK, TrainConfig(env=env_cfg, agent=agent, video=video, video_length=100,
-                                    video_interval=10 * agent.num_steps_per_env, log_root=str(log_dir.parent),
-                                    gpu_ids=None), log_dir)
+                                    video_interval=10 * agent.num_steps_per_env, gpu_ids=None), log_dir)
         return {"iterations": agent.max_iterations, "num_envs": env_cfg.scene.num_envs,
                 "wall_s": round(time.monotonic() - t0, 1), "checkpoints": sorted(p.name for p in log_dir.rglob("model_*.pt")),
                 "metrics": scalar_metrics(log_dir)}
@@ -466,7 +510,10 @@ def main(argv: list[str] | None = None) -> None:
 ```
 
 Notes for the implementer:
-- **Names to confirm** against the mjlab 1.3.0 and microduck sources (wheel unpacked at
+- **Names verified in plan review (inside the built image):** `load_env_cfg`, `load_rl_cfg`,
+  `TrainConfig`'s fields (no `log_root`), `ExportConfig` and `run_export`, the twist ranges, and
+  `sim.mujoco.timestep` and `decimation`. If anything still mismatches, fix it and note it in the
+  commit. The sources are (wheel unpacked at
   `/private/tmp/claude-501/-Users-nick-hehr-src-viam-rslrl-policy-training/3856841f-0045-481c-bb70-ba5b784e7265/scratchpad/mjlab130/src/mjlab`;
   microduck at `${TMPDIR:-/tmp}/gh-clones-${CLAUDE_SESSION_ID}/microduck_rl`). Fix any mismatch and
   note it in the commit:
@@ -539,7 +586,7 @@ tar -tzf dist/microduck-train.tar.gz
 
   Add a test to `tests/test_duck_train.py`:
   1. Run `build_duck.sh` via `subprocess`, skipping if `uvx` is missing.
-  2. Extract `model/training.py` from the tarball.
+  2. Extract `microduck_train-0.1.0/model/training.py` from the tarball.
   3. Assert it imports `duck_train.train`.
 - [ ] **Step 4: Commit** with message `build: microduck-train sdist (model.training shim -> duck_train)`.
 
@@ -613,7 +660,11 @@ Notes:
   `python -c "from importlib.metadata import entry_points; print(entry_points(group='mjlab.tasks'))"`.
 
 - [ ] **Step 2: Build it** with
-  `docker build --platform linux/amd64 -f container/Dockerfile.duck -t microduck-train:dev .`.
+  `docker build --platform linux/amd64 -f container/Dockerfile.duck -t microduck-train:dev container/`.
+  Plan review already built this Dockerfile verbatim: the lock installed first try, BAM built from git,
+  protobuf stayed at 6.33.6 and it printed `torch 2.9.1+cu128 12.8`. If the local image
+  `microduck-train:review` exists and the Dockerfile is unchanged, you may
+  `docker tag microduck-train:review microduck-train:dev`, then `docker rmi microduck-train:review`.
   Expected: the final `RUN` prints `torch 2.9.1+cu128 12.8` or similar. Record the image size.
 
 - [ ] **Step 3: Local smoke test, on CPU under emulation.** It is slow, so keep it tiny. It checks
@@ -719,15 +770,24 @@ viam train submit custom from-registry --org-id=16518049-9dd3-479f-9644-c5d112aa
 - [ ] **Step 1: `--script` option.** `duck_reference.py` and `duck_parity.py` take an optional
   `--script path.json`: a list of `[seconds, vx, vy, wz]`. It replaces the module's `SCRIPT`
   everywhere: `command_at`, `DURATION`, the segment bounds, and `ours`'s command schedule.
-  - Implement it as a module-level `set_script(list)` that both scripts call after parsing args.
-  - `report` reads the script from the reference JSON, which `run()` now saves, so the two sides
-    can't drift.
+  - Implement it as `duck_reference.set_script(list)`. It mutates the module's `SCRIPT` in place
+    (`SCRIPT[:] = ...`) and recomputes the module global `DURATION`.
+  - **Switch `duck_parity.py` (and `tests/test_duck_parity.py`) to `import duck_reference as ref`**
+    and use `ref.SCRIPT`, `ref.DURATION` and `ref.command_at` everywhere. Today it does
+    `from duck_reference import DURATION, SCRIPT, command_at` (`duck_parity.py:34`): `DURATION` is
+    copied by value, so a later `set_script` would leave it stale at lines 122 and 171. `SCRIPT` is
+    used at 49, 78, 175 and 177.
+  - `run()` saves `"script"` in its output JSON.
+  - `report` calls `set_script` from the reference JSON's `"script"`, falling back to the default
+    script when the key is missing (the existing `dist/duck-reference.json` has none), so the two
+    sides can't drift.
   - Default behaviour is unchanged. Unit-test that `set_script` changes `command_at` and the segment
     bounds.
 
 - [ ] **Step 2: Speed sweep.** Before choosing a parity script, write `scripts/duck_speed_sweep.py`.
-  It reuses `duck_reference.run`'s scene setup: for each command, it runs from the reset pose, holds
-  the command for 8 s and reports the mean body vx and wz over the last 5 s. Commands:
+  It's a loop of `duck_reference.set_script([(8.0, vx, 0.0, wz)])` and
+  `duck_reference.run(checkout, duck_xml, onnx)`. Each case runs from the reset pose; report the
+  mean body vx and wz from samples with t > 3 s. Don't refactor `run()`. Commands:
   - vx ∈ {0.1, 0.2, 0.3, 0.4, −0.2, −0.4}
   - wz ∈ {±0.3, ±0.6, ±1.0}, both in place and with vx 0.2
 
@@ -741,7 +801,9 @@ viam train submit custom from-registry --org-id=16518049-9dd3-479f-9644-c5d112aa
      `LICENSE-POLICY.md`. The license note: trained by us from Pollen's Apache-2.0 recipe; the duck
      meshes are not included.
   2. Pack the directory (`fetch_walk_policy.pack`).
-  3. Upload `microduck-velocity` 0.1.0 (`--type=ml_model --model-framework=onnx`).
+  3. Upload `microduck-velocity` 0.1.0:
+     `viam packages upload --org-id=16518049-9dd3-479f-9644-c5d112aa42d8 --name=microduck-velocity --version=0.1.0 --type=ml_model --model-framework=onnx --model-type=robot_policy --path=dist/microduck-velocity.tar.gz`
+     (`--model-type` is required for `ml_model`).
 - [ ] **Step 4: Commit** the script changes and the sweep script.
 
 ---
