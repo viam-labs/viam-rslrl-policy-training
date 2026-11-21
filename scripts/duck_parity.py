@@ -70,6 +70,28 @@ def tracking(samples: list[dict]) -> dict:
     return {"rmse_vx": rms(err_vx), "rmse_wz": rms(err_wz), "n": len(err_vx)}
 
 
+def segment_means(samples: list[dict]) -> list[tuple[float, float]]:
+    """Per SCRIPT segment (skipping SETTLE_S): mean body-frame vx and wz from the net displacement and
+    heading change between the first and last sample in the window, which cancels gait sway. vx is the
+    chord along the mid heading, scaled to arc length (exact for a constant-curvature arc)."""
+    out, start = [], 0.0
+    for seconds, *_ in SCRIPT:
+        end = start + seconds
+        w = [s for s in samples if start + SETTLE_S - 1e-6 <= s["t"] <= end + 1e-6]
+        start = end
+        if len(w) < 2:
+            out.append((float("nan"), float("nan")))
+            continue
+        ys = [yaw(s["trunk_quat_wxyz"]) for s in w]
+        dyaw = sum(math.atan2(math.sin(b - a), math.cos(b - a)) for a, b in zip(ys, ys[1:]))
+        ym, T = ys[0] + dyaw / 2, w[-1]["t"] - w[0]["t"]
+        dx, dy = (w[-1]["trunk_pos"][i] - w[0]["trunk_pos"][i] for i in (0, 1))
+        chord = math.cos(ym) * dx + math.sin(ym) * dy
+        k = (dyaw / 2) / math.sin(dyaw / 2) if abs(dyaw) > 1e-6 else 1.0
+        out.append((chord * k / T, dyaw / T))
+    return out
+
+
 def fell(samples: list[dict]) -> bool:
     return any(s["gravity"][2] > -0.5 for s in samples)
 
@@ -145,6 +167,13 @@ def report(ref_path: Path, ours_path: Path, md: Path) -> None:
         "p99 tick < 20 ms": p99 < 20,
         "late < 1 %": ticks > 0 and late / ticks < 0.01,
     }
+    ref_seg = segment_means(ref["samples"])
+    ours_seg = np.mean([segment_means(e["samples"]) for e in clean], axis=0) if clean else np.full((len(SCRIPT), 2), np.nan)
+    seg_rows = []
+    for k, ((rvx, rwz), (ovx, owz)) in enumerate(zip(ref_seg, ours_seg)):
+        for name, r, o, floor in (("vx", rvx, ovx, 0.03), ("wz", rwz, owz, 0.08)):
+            seg_rows.append((f"segment {k} {name}: ref {r:.3f}, ours {o:.3f}", abs(o - r) <= max(0.25 * abs(r), floor)))
+    checks.update(seg_rows)
     verdict = "machine too slow" if not checks["slip_free >= 18/20"] else ("PASS" if all(checks.values()) else "FAIL")
     lines = [
         f"# MicroDuck walk parity: {verdict}", "",

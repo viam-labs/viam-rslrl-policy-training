@@ -32,3 +32,16 @@ def test_tracking_and_fell():
     assert not fell(s)
     s[3]["gravity"] = [0.9, 0, -0.3]
     assert fell(s)
+
+
+def test_segment_means_and_report(tmp_path):
+    from duck_parity import SCRIPT, report, segment_means
+    s = synth()
+    for (_, vx, _, wz), (mvx, mwz) in zip(SCRIPT, segment_means(s)):
+        assert abs(mvx - vx) < 1e-3 and abs(mwz - wz) < 1e-3
+    (tmp_path / "ref.json").write_text(__import__("json").dumps({"samples": s}))
+    ep = {"samples": s, "slips": 0, "walker": {"ticks": 100, "late": 0, "tick_ms_p99": 1, "run_s": 2}}
+    (tmp_path / "ours.json").write_text(__import__("json").dumps([ep]))
+    report(tmp_path / "ref.json", tmp_path / "ours.json", tmp_path / "r.md")
+    rows = [l for l in (tmp_path / "r.md").read_text().splitlines() if l.startswith("| segment")]
+    assert len(rows) == 2 * len(SCRIPT) and all(l.endswith("| pass |") for l in rows)
