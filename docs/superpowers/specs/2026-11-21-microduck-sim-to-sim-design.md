@@ -41,7 +41,7 @@ backend is out of scope here.
 | Question | Decision | Why |
 |---|---|---|
 | How the loop does IO | The module owns the loop behind a `DuckIO` interface. `SimIO` now, `BusIO` (Dynamixel bus in-process) later. | One atomic `sync_read` per tick on hardware. Pollen's `RobotIo` trait validates this split. |
-| Sim API | The floating-base `robot` model, with arms for the limbs, an IMU on the trunk, and one `io` DoCommand per tick | A single snapshot from one sim instant. Frames and data capture keep working. |
+| Sim API | The floating-base `robot` model, with read-only arms for the limbs, and one `io` DoCommand per tick that also carries gyro and gravity. No IMU component in milestone 1: `io` provides gyro and gravity, and `sensors.py` mounts on a parent's static Viam frame, not on the moving trunk. | A single snapshot from one sim instant. Frames and data capture keep working. |
 | Where floating base and BAM live | Generalize mujoco-sim's existing `robot` model (upstream PR to `viam-labs/viam-mujoco-sim`) | A future Go1, G1 or Open Duck reuses it. A separate BAM module would cross processes every physics step. |
 | Inference | `viam:mlmodel:onnx-cpu`, like rl-insert | The Viam-standard path. The extra gRPC hop is measured by the timing bar. |
 | First policy | Pollen's published walk ONNX. Our trained policy is milestone 3. | Separates "our sim or loop is wrong" from "our training is wrong". |
@@ -55,8 +55,7 @@ Viam machine (cloud simulation, like rl-insert)
   viam-mujoco-sim
     world      physics_dt 0.005
     robot duck floating base; actuators: bam xl330; DoCommand io
-      arms     left-leg (5 joints), right-leg (5), head (4): frames, data capture
-      imu      parent: the duck's trunk
+      arms     left-leg (5 joints), right-leg (5), head (4): read-only, frames, data capture
   viam:mlmodel:onnx-cpu    the walk policy, [1,61] -> [1,14]
   duck-policy (new module)
     50 Hz loop: io snapshot -> obs(61) -> Infer -> 14 targets -> next io
@@ -74,8 +73,14 @@ Viam machine (cloud simulation, like rl-insert)
   to the trunk. Their Viam frames are relative to the robot, so they are correct relative to the trunk.
 - The robot's own Viam frame stays at its configured pose. RDK has no dynamic root pose, so the
   trunk's world pose is available from `io` and the IMU's orientation.
-- Arm motion commands are refused while `io` has control (see unit 3). The loop and the motion
-  service must never drive the same joints.
+- With `actuators` set (unit 2), the limb arms are read-only:
+  - their position-hold step callback is not registered, because it writes position targets into
+    `data.ctrl`, which BAM now owns as torque;
+  - motion commands return an error;
+  - `JointPositions` reads `qpos`;
+  - commanded positions read BAM's `q_target`.
+
+  `io` is the only writer of targets. Without `actuators`, arms behave as today.
 - Out of scope: the 3D viewer showing the duck walk. The plan checks whether `world_state` can stream
   the trunk pose cheaply, and adds it only if it can.
 
@@ -85,12 +90,26 @@ An optional `actuators` attribute on `robot`:
 
 ```json
 "actuators": {"model": "bam", "motor": "xl330", "bam_model": "m6", "kp_fw": 200, "vin": 7.4,
-              "joints": "^(?!passive_).*"}
+              "vin_drop_gain": 0.1, "vin_min": 6.0, "joints": "^(?!passive_).*"}
 ```
 
-- At build time, the robot creates `bam.mujoco.MujocoController` for the matching actuators, with the
-  stiff friction solref and solimp from `infer_policy.py`. It registers `controller.update()` as a
-  step callback. Targets go through `set_q_target`.
+The defaults are the values above. `vin_drop_gain` 0.1 and `vin_min` 6.0 are `infer_policy.py`'s
+defaults, and 0.1 sits in the middle of the training range 0–0.2. 0 turns sag off.
+
+At MjSpec build time, the robot mirrors `infer_policy.py`'s `load_mujoco_with_bam`, which mirrors
+`bam.mjlab.BamActuator.edit_spec`. For each matching actuator:
+
+- `set_to_motor()`;
+- `forcelimited` on, with `forcerange = ±vin·kt/R` (from the BAM model);
+- `ctrllimited` off, and `gear = [1,0,0,0,0,0]`;
+- on its joint, `damping = 0`, `frictionloss = 0`, and `solref_friction` / `solimp_friction` set to
+  BAM's stiff values `(-5e4, -2e2)` and `(0.99, 0.9999, 0.001, 0.5, 2.0)`.
+
+After compile, it creates `MujocoController(bam_model, names, model, data, vin_drop_gain, vin_min)`
+and calls `reset(data.qpos)`, which sets `q_target` to the current pose. It registers a wrapper that
+calls `controller.update()` as a step callback (callbacks take `dt`; `update()` takes no arguments).
+Targets go through `set_q_target`. Without this rewrite, BAM's torques would feed the MJCF's position
+actuators and the physics would be silently wrong. A unit test locks it (see Testing).
 - Without `actuators`, the file's own actuators run as today.
 - `better-actuator-models` (numpy and colorama only) becomes a dependency, from Rhoban's git branch
   `mjlab_frictionloss` at the commit `microduck_rl` locks.
@@ -116,11 +135,12 @@ Response:
 - **Gyro.** Trunk angular velocity in the trunk frame (`qvel` of the free joint's angular part).
 - **Gravity.** The unit gravity vector in the trunk frame, computed from the free joint's
   quaternion, as `body_server.py` does.
-- **First call.** The first `io` call takes control of the joints, and arm motion is refused after
-  that (unit 1).
-- **Torque.** `torque: false` sets zero gain (limp), as `body_server` does. With BAM it zeroes the
-  controller's output.
-- **Release.** `{"io_release": true}` hands the joints back to the arms.
+- **Targets.** `targets: null` leaves the current `q_target` unchanged (a read-only call).
+- **Torque.** `torque: false` makes the duck limp, as `body_server` does. With BAM, `ctrl` is zeroed
+  after `update()` each step while torque is off. When torque is turned back on, `q_target` is reset
+  to the current pose, so the duck isn't flung at a stale target.
+- **Scope.** `io` requires `actuators` (unit 2). Without BAM there is no `io`; PD-only duck physics
+  isn't a goal.
 
 ### 4. duck-policy module (new; directory and repo chosen in the milestone 2 plan)
 
@@ -180,11 +200,17 @@ gRPC round trips add some in sim, and parity shows whether injection is needed.
   - stop for 4 s;
   - backward at 0.1 m/s for 6 s.
 
-  Battery voltage is fixed at 7.4 V, with no domain randomization, and episode seeds vary only the
-  start yaw.
-- **Reference.** A headless runner that imports `infer_policy.py`'s own functions
-  (`load_mujoco_with_bam`, its observation builder). It runs from a `microduck_rl` checkout at a
-  pinned commit.
+  Both sides use the same actuator settings: battery voltage 7.4 V, `vin_drop_gain` 0.1, `vin_min`
+  6.0, kp_fw 200, no other domain randomization. Episode seeds vary only the start yaw.
+- **Reference.** A headless runner that reuses `infer_policy.py`'s own code: `load_mujoco_with_bam`;
+  `bam_ctrl.reset(data.qpos)` before each episode; and `PolicyInference.get_observations`, a method
+  that needs a `PolicyInference` built with `new_cmd_obs=True` and `use_projected_gravity=True`. It
+  steps exactly 4 × 5 ms per action and runs from a `microduck_rl` checkout at a pinned commit.
+- **Timing difference.** mujoco-sim runs `real_time` against the wall clock, not in lockstep. Ticks
+  land at arbitrary sim instants, with a varying number of physics steps between them. The 1.25×
+  RMSE margin is meant to absorb that jitter. The harness logs the world's `real_time_factor` and
+  `slips` for every episode, and an episode with any slip is reported separately rather than
+  counted.
 - **Ours.** The same script sent to duck-policy's `set_command` on the Viam machine. Trunk velocity
   is logged from `io`.
 - **Metrics.** Falls per 20 episodes; velocity-tracking RMSE over the commanded segments (body-frame
@@ -229,12 +255,18 @@ Each milestone gets its own implementation plan.
 - **mujoco-sim (CPU unit tests):**
   - a free-joint robot loads, and its limbs have trunk-relative frames;
   - a free joint on a non-root body, or on a robot riding a base, is rejected;
-  - the BAM callback's `ctrl` equals `MujocoController.update()` run directly, for a fixed state;
+  - after the BAM spec rewrite, the compiled model's actuators match `load_mujoco_with_bam`'s
+    (motor type, `forcerange`, `gear`, joint `damping`, `frictionloss`, friction solref and solimp)
+    for `robot_walk.xml`;
+  - a few hundred steps of mujoco-sim with BAM, from the same state and targets, track
+    `load_mujoco_with_bam` plus `MujocoController` run directly, to float tolerance;
   - `io` returns state from one `t`, and torque off makes the duck limp;
-  - arm motion is refused while `io` has control;
+  - with `actuators` set, arm motion errors and no arm writes `ctrl`;
   - the existing ALOHA and TIAGo tests pass unchanged.
 - **duck-policy:**
   - the `obs.py` golden test: a recorded `infer_policy.py` step reproduces its 61 inputs exactly;
+  - the `joints` order from `io` is asserted to be the policy's order (left leg 5, head 4, right
+    leg 5), with the mouth absent;
   - each stop condition fires under a fake `DuckIO`;
   - targets are clipped and rate-capped.
 - **Integration:** the parity harness (unit 5) is the milestone 2 gate.
