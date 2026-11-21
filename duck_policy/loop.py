@@ -1,0 +1,155 @@
+"""duck-policy's 50 Hz loop: ramp to the default pose, then each tick read the duck, build the
+observation, infer, and write default_pose + action * scale (clipped to joint limits, rate-capped).
+Read-infer-write in that order matches infer_policy.py (observe, infer, apply, then step). Every stop
+condition ends the loop with a reason; a fall or a bad action also turns torque off (limp), the rest hold
+the last targets. See spec unit 4."""
+
+from __future__ import annotations
+
+import asyncio
+import math
+import time
+from collections import deque
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+
+import numpy as np
+
+from .io import DuckIO, Snapshot
+from .obs import Command, build_obs
+
+
+@dataclass(frozen=True)
+class Limits:
+    fall_gravity_z: float = -0.5  # trunk tilted ~60 degrees
+    fall_ticks: int = 3
+    late_window: int = 50
+    late_fraction: float = 0.05
+    late_streak: int = 3
+    call_timeout_s: float = 0.015
+    ramp_s: float = 1.0
+
+
+class Stop(Exception):
+    def __init__(self, reason: str, limp: bool = False) -> None:
+        super().__init__(reason)
+        self.reason, self.limp = reason, limp
+
+
+class PolicyLoop:
+    def __init__(self, io: DuckIO, infer: Callable[[np.ndarray], np.ndarray | Awaitable[np.ndarray]],
+                 cfg: dict, limits: Limits) -> None:
+        self.io, self.infer, self.limits = io, infer, limits
+        self.default = np.asarray(cfg["default_pose"], float)
+        self.scale = float(cfg["action_scale"])
+        lim = np.asarray(cfg["joint_limits"], float)
+        self.lo, self.hi = lim[:, 0], lim[:, 1]
+        self.dt = 1.0 / float(cfg.get("control_hz", 50))
+        self.twist_lo, self.twist_hi = cfg["command"]["twist_min"], cfg["command"]["twist_max"]
+        safety = cfg.get("safety") or {}
+        self.action_bound = float(safety.get("action_bound", 5.0))
+        self.max_step = float(safety.get("max_step_rad", 0.5))
+        self.command, self.command_clipped = Command(), False
+        self.ticks, self.late, self.reason, self.last_obs, self.t0, self.t_end = 0, 0, None, None, None, None
+        self.tick_ms: deque[float] = deque(maxlen=500)
+
+    def set_command(self, command: Command) -> None:
+        clipped = command.clipped(self.twist_lo, self.twist_hi)
+        self.command_clipped, self.command = clipped != command, clipped
+
+    async def _call(self, coro):
+        try:
+            return await asyncio.wait_for(coro, self.limits.call_timeout_s)
+        except asyncio.TimeoutError:
+            raise Stop("hung_call") from None
+
+    async def _infer(self, obs: np.ndarray) -> np.ndarray:
+        out = self.infer(obs)
+        if asyncio.iscoroutine(out) or isinstance(out, Awaitable):
+            out = await self._call(out)
+        return np.asarray(out, float).reshape(14)
+
+    def _target(self, action: np.ndarray, prev: np.ndarray) -> np.ndarray:
+        target = np.clip(self.default + action * self.scale, self.lo, self.hi)
+        return prev + np.clip(target - prev, -self.max_step, self.max_step)
+
+    async def run(self, max_ticks: int | None = None) -> str:
+        try:
+            await self._run_timed(max_ticks)
+            self.reason = "max_ticks"
+        except Stop as stop:
+            self.reason = stop.reason
+            if stop.limp:
+                await self.io.torque(False)
+        except asyncio.CancelledError:
+            self.reason = "stopped"
+            raise
+        except Exception as error:  # e.g. a gRPC error from the duck or the mlmodel service
+            self.reason = f"error: {error}"
+        return self.reason
+
+    async def _run_timed(self, max_ticks: int | None) -> None:
+        try:
+            await self._run(max_ticks)
+        finally:
+            self.t_end = time.monotonic()
+
+    async def _run(self, max_ticks: int | None) -> None:
+        lim = self.limits
+        snap: Snapshot = await self._call(self.io.torque(True))
+        generation, prev_t = snap.generation, snap.t
+        # Ramp from where the duck is to the default pose. After a reset at STAND it's already there, and
+        # the ramp is skipped: holding the pose with no policy, the duck tips over within ~1.5 s (plan review).
+        start = np.asarray(snap.q, float)
+        n = 0 if np.abs(start - self.default).max() < 0.05 else max(1, round(lim.ramp_s / self.dt))
+        for i in range(1, n + 1):
+            await self._call(self.io.write((start + (self.default - start) * i / n).tolist()))
+            await asyncio.sleep(self.dt)
+        if n == 0:
+            # Let sim time move past the torque snapshot's t. mujoco-sim steps in 5 ms, so a read 2 ms
+            # later often shows the same t, which would stop with "stale_state" on tick 1.
+            await asyncio.sleep(self.dt)
+        prev_target, last_action = self.default.copy(), np.zeros(14)
+        fall, late_hist, late_streak = 0, deque(maxlen=lim.late_window), 0
+        t0 = self.t0 = time.monotonic()
+        while max_ticks is None or self.ticks < max_ticks:
+            deadline = t0 + (self.ticks + 1) * self.dt
+            tick_start = time.monotonic()
+            snap = await self._call(self.io.read())
+            if snap.generation != generation:
+                raise Stop("rebuilt")
+            if snap.t <= prev_t:
+                raise Stop("stale_state")
+            prev_t = snap.t
+            fall = fall + 1 if snap.gravity[2] > lim.fall_gravity_z else 0
+            if fall >= lim.fall_ticks:
+                raise Stop("fall", limp=True)
+            obs = build_obs(gyro=snap.gyro, gravity=snap.gravity, q=snap.q, dq=snap.dq,
+                            default_pose=self.default, last_action=last_action, command=self.command)
+            self.last_obs = obs
+            action = await self._infer(obs)
+            if not np.all(np.isfinite(action)) or np.abs(action).max() > self.action_bound:
+                raise Stop("bad_action", limp=True)
+            target = self._target(action, prev_target)
+            await self._call(self.io.write(target.tolist()))
+            prev_target, last_action = target, action
+            self.ticks += 1
+            elapsed = time.monotonic() - tick_start
+            self.tick_ms.append(1000 * elapsed)
+            is_late = time.monotonic() > deadline
+            self.late += is_late
+            late_hist.append(is_late)
+            late_streak = late_streak + 1 if is_late else 0
+            if late_streak >= lim.late_streak or (len(late_hist) == lim.late_window
+                                                  and sum(late_hist) > lim.late_fraction * lim.late_window):
+                raise Stop("overruns")
+            await asyncio.sleep(max(0.0, deadline - time.monotonic()))
+
+    def status(self) -> dict:
+        ms = sorted(self.tick_ms)
+        pct = (lambda p: round(ms[min(len(ms) - 1, int(p * len(ms)))], 2)) if ms else (lambda p: None)
+        run_s = None if self.t0 is None else round((self.t_end or time.monotonic()) - self.t0, 3)
+        return {"ticks": self.ticks, "late": self.late, "run_s": run_s,  # run_s: since the loop's t0 (after any ramp)
+                "tick_ms_p50": pct(0.5), "tick_ms_p99": pct(0.99),
+                "reason": self.reason, "command": [self.command.vx, self.command.vy, self.command.wz],
+                "command_clipped": self.command_clipped}
