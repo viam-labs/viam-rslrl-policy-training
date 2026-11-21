@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -24,3 +27,16 @@ def test_layout_matches_infer_policy():
 def test_command_clips_to_the_trained_ranges():
     c = Command(1.0, -1.0, 3.0).clipped([-0.4, -0.3, -1.0], [0.4, 0.3, 1.0])
     assert (c.vx, c.vy, c.wz) == (0.4, -0.3, 1.0)
+
+
+GOLDEN = Path(__file__).parent / "data" / "duck_golden.json"
+
+
+def test_build_obs_reproduces_infer_policy_exactly():
+    g = json.loads(GOLDEN.read_text())
+    assert len(g["ticks"]) == 25
+    for tick in g["ticks"]:
+        vx, vy, wz = tick["command"]
+        obs = build_obs(gyro=tick["gyro"], gravity=tick["gravity"], q=tick["q"], dq=tick["dq"],
+                        default_pose=g["default_pose"], last_action=tick["last_action"], command=Command(vx, vy, wz))
+        assert obs == pytest.approx(np.array(tick["obs"], np.float32), abs=1e-6)
