@@ -5,7 +5,8 @@ Run with mujoco-sim's own environment:
     uv run --project /Users/nick.hehr/src/viam-mujoco-sim-floating python scripts/duck_stand_check.py dist/duck-sim [mujoco-sim src dir]
 
 The source dir defaults to $MUJOCO_SIM_SRC, else the floating-base-bam worktree (viam-mujoco-sim
-PR #7, unreleased).
+PR #7, unreleased). Both local-module paths switch to the registry module once a mujoco-sim
+release includes PR #7.
 
 With no policy the duck tips forward in about a second, and the walk model has no trunk/head
 collision, so it then sinks through the floor: the check only asserts the first 0.3 s and prints
@@ -18,15 +19,10 @@ import os
 import sys
 from pathlib import Path
 
+import mujoco
+import numpy as np
+
 DEFAULT_SRC = "/Users/nick.hehr/src/viam-mujoco-sim-floating/src"
-sys.path.insert(0, sys.argv[2] if len(sys.argv) > 2 else os.environ.get("MUJOCO_SIM_SRC", DEFAULT_SRC))
-
-import mujoco  # noqa: E402
-import numpy as np  # noqa: E402
-
-from mujoco_module.handles import ArmHandle  # noqa: E402
-from mujoco_module.robot_file import RobotHandle  # noqa: E402
-from mujoco_module.sim import SimManager, WorldConfig  # noqa: E402
 
 # The policies' joint order (microduck_rl README "Joint layout"): left leg, neck/head, right leg
 POLICY_ORDER = [
@@ -43,6 +39,10 @@ LIMBS = {
 
 
 def main(package: Path) -> None:
+    from mujoco_module.handles import ArmHandle
+    from mujoco_module.robot_file import RobotHandle
+    from mujoco_module.sim import SimManager, WorldConfig
+
     sim = SimManager()
     sim.bind_current_thread()
     sim.configure_world(WorldConfig.from_attrs({"physics_dt": 0.005}))
@@ -58,8 +58,10 @@ def main(package: Path) -> None:
     assert abs(snap["trunk_pos"][2] - 0.12) < 1e-6, snap["trunk_pos"]
     assert np.allclose(snap["q"], stand, atol=1e-6), (snap["q"], stand)
     print("homed at STAND, trunk z 0.12")
+    assert "robot-bam:duck" in sim.step_callbacks, list(sim.step_callbacks)
+    ctrl0 = sim.data.ctrl.copy()  # homing wrote the keyframe's ctrl
     sim.advance(0.05)
-    assert np.abs(sim.data.ctrl).max() > 0, "BAM is not driving"
+    assert not np.allclose(sim.data.ctrl, ctrl0), "BAM is not driving"
     print("BAM drives the servos")
     sim.advance(0.25)
     snap = duck.io(None, None)
@@ -71,4 +73,7 @@ def main(package: Path) -> None:
 
 
 if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        raise SystemExit(__doc__)
+    sys.path.insert(0, sys.argv[2] if len(sys.argv) > 2 else os.environ.get("MUJOCO_SIM_SRC", DEFAULT_SRC))
     main(Path(sys.argv[1]).resolve())
