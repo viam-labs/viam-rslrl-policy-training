@@ -2,6 +2,18 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status 2026-11-21: Tasks 1–9 done.** Results are in
+`docs/superpowers/specs/2026-11-21-microduck-parity-results.md`.
+- **Verdict:** strict FAIL, on velstand's backward-start basin (the reference stands still from 3
+  of 20 perturbed stances) and one overrun stop. Forward and turn parity is within 2–7 %, and p99
+  tick time is about 6 ms.
+- **Fixes beyond the plan:**
+  - golden ticks from the turning segment;
+  - loop warm-up, no catch-up, stale state needs 3 reads, shielded limp;
+  - call timeout 50 ms (from 15);
+  - parity checks per segment against the reference, including outlier counts and "walker ran".
+- **Open:** whether to raise the `late_streak` overrun rule.
+
 **Goal:** a Viam module, `duck_policy`, runs Pollen's `velstand` walk policy at 50 Hz against the
 simulated MicroDuck through the robot's `io` DoCommand and the `viam:mlmodel:onnx-cpu` service. It
 passes a parity check against Pollen's own CPU reference, `infer_policy.py`.
