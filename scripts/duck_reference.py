@@ -7,7 +7,7 @@ driven by a command script instead of the keyboard and run as fast as it can.
 
 The scene is the duck-sim package's duck.xml, so both sides of the parity check simulate the same file
 with the same MuJoCo build. Records, every 0.1 s of sim time: t, trunk position and quaternion, gravity.
---golden saves the first 25 ticks' raw inputs and the observation infer_policy built, for the obs test.
+--golden saves ticks 0-24 and 600-624 (the turning segment)' raw inputs and the observation infer_policy built, for the obs test.
 --stats writes action_bound (2 x p99.9 |action|) and max_step_rad (2 x p99.9 |target change per tick|)
 into the walk package's config.json safety block.
 """
@@ -80,7 +80,7 @@ def run(checkout: Path, duck_xml: Path, onnx: Path, golden: Path | None = None) 
     while data.time < DURATION - 1e-9:
         policy.vel_cmd[:] = command_at(data.time)
         policy._update_command()
-        if golden is not None and tick < 25:
+        if golden is not None and (tick < 25 or 600 <= tick < 625):  # rest, then vx 0.4 + wz 0.6 at t = 12 s
             ticks.append({
                 "gyro": policy.get_base_ang_vel().tolist(), "gravity": policy.get_projected_gravity().tolist(),
                 "q": data.qpos[policy.joint_qpos_indices].tolist(), "dq": data.qvel[policy.joint_qvel_indices].tolist(),

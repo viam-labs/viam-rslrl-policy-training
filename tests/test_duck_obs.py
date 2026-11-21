@@ -34,7 +34,8 @@ GOLDEN = Path(__file__).parent / "data" / "duck_golden.json"
 
 def test_build_obs_reproduces_infer_policy_exactly():
     g = json.loads(GOLDEN.read_text())
-    assert len(g["ticks"]) == 25
+    assert len(g["ticks"]) == 50
+    assert any(t["command"][0] and t["command"][2] for t in g["ticks"])
     for tick in g["ticks"]:
         vx, vy, wz = tick["command"]
         obs = build_obs(gyro=tick["gyro"], gravity=tick["gravity"], q=tick["q"], dq=tick["dq"],
