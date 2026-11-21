@@ -1,0 +1,15 @@
+{
+  "$schema": "https://dl.viam.dev/module.schema.json",
+  "module_id": "devrel:duck-policy",
+  "visibility": "private",
+  "url": "",
+  "description": "Runs Pollen's MicroDuck walk policy at 50 Hz against a duck serving the io DoCommand, inferring through an mlmodel service.",
+  "models": [
+    {
+      "api": "rdk:service:generic",
+      "model": "devrel:duck-policy:controller",
+      "short_description": "50 Hz walk policy loop: read io, infer via mlmodel, write joint targets, with stop conditions."
+    }
+  ],
+  "entrypoint": "run.sh"
+}

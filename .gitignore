@@ -3,3 +3,6 @@ __pycache__/
 .pytest_cache/
 MUJOCO_LOG.TXT
 dist/
+
+duck_policy/.venv/
+duck_policy/bin/
