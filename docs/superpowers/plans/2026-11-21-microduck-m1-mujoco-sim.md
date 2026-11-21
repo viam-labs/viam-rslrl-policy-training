@@ -2,6 +2,29 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status 2026-11-21: done.**
+- **Tasks 1–9:** in viam-labs/viam-mujoco-sim PR #7, branch `floating-base-bam`, worktree
+  `~/src/viam-mujoco-sim-floating`. The suite passes with 1051 tests (34 new).
+- **Review fixes beyond the plan:**
+  - unnamed free joints are rejected;
+  - a world reset bumps `generation`;
+  - a robot registers in one sim-thread task, which fixed a running-sim race;
+  - limb arms on a BAM robot can be built (via `arm_actuators(driven=...)`);
+  - the DoCommand treats a wire null, which viam-sdk decodes as int 0, as null;
+  - limbs look up the live robot at call time;
+  - gravity compensation is off for any robot with `actuators`;
+  - BAM step failures are logged and the callback is kept;
+  - NOTICE credits the code ported from microduck_rl.
+- **Tasks 10–11:** commits 6001eaf, 3343a6b and a679756. The package is `duck-sim` 0.1.0
+  (private, DevRelDemos).
+- **Deviations from the task text:**
+  - the stand check asserts upright at 0.3 s, not 5 s (with no policy the duck tips in about 1 s);
+  - limb arms need `home_keyframe: "STAND"`;
+  - `head-cam` is mounted with quaternion W -0.5, X 0.5, Y -0.5, Z 0.5.
+- **End-to-end check:** the `microduck-preview` machine (DevRelDemos/test) runs
+  `duck-sim-machine.json` from the package.
+- **Follow-up:** zero a robot's ctrl if BAM fails to bind.
+
 **Goal:** `viam-labs:mujoco-sim`'s `robot` model can load a free-floating legged robot. It drives the robot's servos with Rhoban's BAM actuator model, and serves one atomic `io` DoCommand per control tick. The MicroDuck walk MJCF loads into it from a private archive package and stands under BAM.
 
 **Architecture:** Implements units 1–3 and 6 of the spec,
