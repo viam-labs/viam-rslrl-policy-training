@@ -124,8 +124,11 @@ arguments). On each step it:
 3. Calls `controller.update()`, and if torque is off, zeroes `ctrl` for the BAM actuators.
 
 Targets go through `set_q_target` (present in BAM's `mujoco.py`) or the `q_target` array, as
-`infer_policy.py` does. Rebuilds happen at configure time, so a mid-run rebuild is not supported. The
-loop's stale-state check stops it if one happens, because sim time is re-anchored.
+`infer_policy.py` does. The bind check is one `ensure_bound()` method. The step wrapper calls it, and
+so does `io` before touching the controller, because `io` can arrive after a rebuild but before the
+next step, or while the world is paused. Rebuilds happen at configure time, so a mid-run rebuild is
+not supported. `io` reports `generation`, and duck-policy stops if it changes while the loop runs.
+Sim time stays continuous across a rebuild, so the stale-state check would not catch it.
 
 An arm's `init` still writes `data.ctrl = home` under BAM. That is harmless, because `update()`
 overwrites `ctrl` before the first `mj_step`. Without the actuator rewrite, BAM's torques would feed
@@ -146,7 +149,7 @@ Response:
 
 ```json
 {"t": 12.34, "q": [14], "dq": [14], "gyro": [3], "gravity": [3],
- "trunk_pos": [3], "trunk_quat_wxyz": [4], "joints": [14 names]}
+ "trunk_pos": [3], "trunk_quat_wxyz": [4], "joints": [14 names], "generation": 3}
 ```
 
 - **One instant.** It runs on the sim thread. Targets are applied, then the state is read in the same
@@ -203,6 +206,7 @@ gRPC round trips add some in sim, and parity shows whether injection is needed.
 | Bad action | NaN, inf, or \|action\| above the manifest's bound (2x the p99.9 of reference rollouts if the manifest has none) | torque off |
 | Overruns | more than 5 % of the last 50 ticks late, or 3 in a row | stop, torque on, hold the last targets |
 | Stale state | snapshot `t` not advanced since the last tick | stop, torque on, hold the last targets |
+| Sim rebuilt | snapshot `generation` differs from the one at `start` | stop, torque on, hold the last targets |
 | Hung call | `io` or `Infer` exceeds 15 ms | stop, torque on, hold the last targets |
 | Bad command | `set_command` outside the trained twist ranges | clip, and note it in `status` |
 
@@ -285,7 +289,8 @@ Each milestone gets its own implementation plan.
   - adding a limb arm after the robot, which forces a rebuild, leaves BAM bound to the new
     `model`/`data` (armature set, nonzero `ctrl` under load) with `q_target` equal to the post-`init`
     pose;
-  - `io` returns state from one `t`;
+  - `io` returns state from one `t`, and `io` sent after a rebuild but before the next step acts on
+    the new model (it binds first);
   - torque off makes the duck collapse. BAM's friction still acts on the back-driven motors, so the
     test expects a slowed collapse, not a free fall;
   - with `actuators` set, arm motion errors and no arm writes `ctrl`;
