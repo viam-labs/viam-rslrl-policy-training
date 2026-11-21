@@ -72,7 +72,7 @@ Viam machine (cloud simulation, like rl-insert)
 - Limbs stay `viam-labs:mujoco-sim:arm` components with `robot` set, each a chain whose base is fixed
   to the trunk. Their Viam frames are relative to the robot, so they are correct relative to the trunk.
 - The robot's own Viam frame stays at its configured pose. RDK has no dynamic root pose, so the
-  trunk's world pose is available from `io` and the IMU's orientation.
+  trunk's world pose is available from `io` (`trunk_pos`, `trunk_quat_wxyz`).
 - With `actuators` set (unit 2), the limb arms are read-only:
   - their position-hold step callback is not registered, because it writes position targets into
     `data.ctrl`, which BAM now owns as torque;
