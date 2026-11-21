@@ -1,12 +1,15 @@
-"""Package the MicroDuck walk model for viam-labs:mujoco-sim as a private Viam archive.
+"""Package the MicroDuck ground-contact model for viam-labs:mujoco-sim as a private Viam archive.
 
     uv run python scripts/export_duck_scene.py <microduck_rl checkout> [out_dir]   (default dist/duck-sim)
 
 The checkout must be at MICRODUCK_RL_COMMIT. The meshes are CC BY-NC-SA 4.0 (microduck_rl's
 LICENSE-MODELS.md): the package stays private to the org, and is never bundled in a public module.
 
-Writes out_dir/ with robot_walk.xml, its assets/ meshes, LICENSE-MODELS.md and duck.xml: a wrapper
-that includes robot_walk.xml and adds the STAND keyframe from scene_walk.xml as its first keyframe,
+Uses robot_groundcontact.xml, not robot_walk.xml: velstand, the walk policy, was trained on it,
+infer_policy.py loads it, and it has trunk and head collision.
+
+Writes out_dir/ with robot_groundcontact.xml, its assets/ meshes, LICENSE-MODELS.md and duck.xml: a
+wrapper that includes it and adds the STAND keyframe from scene.xml as its first keyframe,
 the robot's home (mujoco-sim homes a robot file from its first keyframe). Then out_dir.tar.gz,
 for `viam packages upload`.
 """
@@ -25,12 +28,12 @@ MODEL_DIR = Path("src/mjlab_microduck/robot/microduck")
 
 
 def stand_keyframe(scene_xml: str) -> str:
-    """scene_walk.xml's STAND <key .../> element, verbatim. Comments are stripped first: the file
+    """scene.xml's STAND <key .../> element, verbatim. Comments are stripped first: the file
     keeps the old STAND commented out above the STAND2-tuned one (hip_pitch 0.4579, not 0.5236)."""
     live = re.sub(r"<!--.*?-->", "", scene_xml, flags=re.S)
     match = re.search(r'<key\s+name="STAND".*?/>', live, re.S)
     if match is None:
-        raise SystemExit("scene_walk.xml has no STAND keyframe; is the checkout at the pinned commit?")
+        raise SystemExit("scene.xml has no STAND keyframe; is the checkout at the pinned commit?")
     return match.group(0)
 
 
@@ -43,12 +46,12 @@ def main(checkout: Path, out: Path) -> None:
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
-    shutil.copy(src / "robot_walk.xml", out / "robot_walk.xml")
+    shutil.copy(src / "robot_groundcontact.xml", out / "robot_groundcontact.xml")
     shutil.copytree(src / "assets", out / "assets", ignore=shutil.ignore_patterns("*.part"))
     shutil.copy(checkout / "LICENSE-MODELS.md", out / "LICENSE-MODELS.md")
-    key = stand_keyframe((src / "scene_walk.xml").read_text())
+    key = stand_keyframe((src / "scene.xml").read_text())
     (out / "duck.xml").write_text(
-        '<mujoco model="microduck">\n  <include file="robot_walk.xml"/>\n'
+        '<mujoco model="microduck">\n  <include file="robot_groundcontact.xml"/>\n'
         f"  <keyframe>\n    {key}\n  </keyframe>\n</mujoco>\n"
     )
     archive = out.with_suffix(".tar.gz")

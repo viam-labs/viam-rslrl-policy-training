@@ -8,8 +8,8 @@ The source dir defaults to $MUJOCO_SIM_SRC, else the floating-base-bam worktree 
 PR #7, unreleased). Both local-module paths switch to the registry module once a mujoco-sim
 release includes PR #7.
 
-With no policy the duck tips forward in about a second, and the walk model has no trunk/head
-collision, so it then sinks through the floor: the check only asserts the first 0.3 s and prints
+With no policy the duck tips forward in about a second, and with the ground-contact model's trunk
+and head collision it then falls onto the floor: the check only asserts the first 0.3 s and prints
 the 1 s state. A policy keeps it up (milestone 2).
 """
 
