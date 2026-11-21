@@ -4,7 +4,7 @@
 # would package that instead of setup.py.
 set -euo pipefail
 cd "$(dirname "$0")"
-rm -rf dist && mkdir -p dist/stage
+rm -rf dist/stage dist/rl-insert-train.tar.gz && mkdir -p dist/stage
 cp -R setup.py MANIFEST.in model rl_insert dist/stage/
 # COPYFILE_DISABLE: macOS tar would otherwise add AppleDouble ._* entries.
 (cd dist/stage && COPYFILE_DISABLE=1 uvx --from build pyproject-build --sdist --outdir .. . >/dev/null)
