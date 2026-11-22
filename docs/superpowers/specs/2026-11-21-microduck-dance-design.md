@@ -116,7 +116,7 @@ It fails if:
 2. From the tabular Parquet, take each sequence's `JointPositions` rows for the three arms, and convert degrees to radians (Viam arms report degrees).
 3. Order the joints by the arm joint order: left leg ×5, head ×4, right leg ×5, which is the policy order.
 4. Put the three arms on a common time base by linear interpolation at 50 Hz.
-5. Each sample's phase is ((t − window_start) / period) mod 1. `record` starts the window at φ = 0 and paces playback by wall time, so no alignment search is needed.
+5. Each sample's phase is ((t − window_start) / period) mod 1. `record` starts the window at φ = 0 and paces playback by wall time, so no alignment search is needed. `duck_choreo.py` must run on the same host as the choreo machine's viam-server, so the window start and the capture timestamps share a clock. The measured joints lag the commanded ones slightly (the position actuators' response); the builder's test uses synthetic data with a 40 ms lag, to check that bin 0 still passes the STAND check.
 6. Fold the samples into 100 phase bins, and take the mean of each bin over every cycle in every sequence.
 7. Fail if any bin is empty, if the per-bin spread (the standard deviation across cycles) is over 0.05 rad, or if bin 0 differs from STAND by more than 0.05 rad.
 
@@ -129,7 +129,7 @@ It's registered at job start and built from `Mjlab-Velocity-Flat-MicroDuck`'s co
 - **Command `twist`:** `DancePhaseCommandCfg`, a subclass of Pollen's `GroundPickPhaseCommandCfg(period=period_s, randomize_phase=True)`.
   - `rel_frozen_envs = 0.2`: at each reset, after the random phase is applied, 20 % of envs are chosen to have φ frozen at 0 (command `[1, 0, 0]`), the stand-and-hold case.
   - It overrides both `reset` (choose frozen envs) and `compute` (don't advance φ for frozen envs), since the parent advances the phase every step.
-- **Commands `head_pose` and `body_pose`:** constant zero, keeping the 13-value slot layout. The dance drives the head through the reference.
+- **Commands `head_pose` and `body_pose`:** constant zero (their `UniformPoseCommandCfg` ranges set to `(0, 0)`), keeping the 13-value slot layout. The dance drives the head through the reference.
 - **Rewards removed:** `track_linear_velocity`, `track_angular_velocity`, `air_time`, `foot_clearance`, `foot_swing_height`, `pose`, `head_pose_tracking`, `head_pose_bias`, `body_pose_tracking`. (`head_pose_tracking` would pull the head to HOME against the dance.)
 - **Rewards after the change** (the complete list):
 
@@ -145,7 +145,7 @@ It's registered at job start and built from `Mjlab-Velocity-Flat-MicroDuck`'s co
 
   The new functions live in `duck_train/dance_task.py`. `dance_pose*` take φ from the command the same way `_phase_pose_error` does: `atan2(cmd[1], cmd[0]) / 2π mod 1`.
 - **Curricula removed:** `action_rate_weight`, `standing_envs`, `head_pose_range`, `body_pose_range`, `head_pose_bias_weight`. Kept: `com_range`, `head_com_range` (randomization ramps).
-- **Terminations:** unchanged (`fell_over`, `time_out`, `nan_state`). `episode_length_s` is 20.
+- **Terminations:** unchanged (`fell_over`, `time_out`, `nan_state`). `episode_length_s` is set explicitly to 20 in `dance_task.py` (the velocity config inherits mjlab's default).
 - **Randomization:** unchanged from the velocity task (BAM actuator, encoder bias, pushes, CoM and mass).
 - **No dance curriculum at first.** If the probe fails to learn, the first thing to add is a ramp from STAND to the full reference.
 
