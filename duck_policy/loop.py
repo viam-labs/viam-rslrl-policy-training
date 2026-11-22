@@ -32,6 +32,9 @@ class Limits:
     stale_ticks: int = 3
 
 
+RAMP_THRESHOLD = 0.05  # rad: a start pose farther than this from default is ramped to it
+
+
 class Stop(Exception):
     def __init__(self, reason: str, limp: bool = False) -> None:
         super().__init__(reason)
@@ -116,7 +119,7 @@ class PolicyLoop:
         # Ramp from where the duck is to the default pose. After a reset at STAND it's already there, and
         # the ramp is skipped: holding the pose with no policy, the duck tips over within ~1.5 s (plan review).
         start = np.asarray(snap.q, float)
-        n = 0 if np.abs(start - self.default).max() < 0.05 else max(1, round(lim.ramp_s / self.dt))
+        n = 0 if np.abs(start - self.default).max() < RAMP_THRESHOLD else max(1, round(lim.ramp_s / self.dt))
         for i in range(1, n + 1):
             await self._call(self.io.write((start + (self.default - start) * i / n).tolist()))
             await asyncio.sleep(self.dt)

@@ -62,7 +62,12 @@ Viam machine (cloud simulation, like rl-insert)
     DuckIO: SimIO (the robot's io DoCommand); BusIO later
     DoCommand: start, stop, status, set_command
     optional attribute `world` (the mujoco-sim world): `start` on a fallen duck (gravity z > -0.9)
-    recovers it: world pause, reset, start the loop, play (the policy has torque before physics resumes)
+    recovers it (also when the joints are far enough from default that the loop would ramp): world pause, reset, torque on,
+    start the loop, play (the duck is stiff and the policy running when physics resumes). `start` replies
+    `recovered`: "fallen", "off_pose" or false. In sim every start off STAND resets the world (the duck returns to its
+    spawn point), so stop-then-resume-from-here does not exist. Known gap on hardware (no world): the start ramp runs
+    with no policy and a stopped duck tips during it; hardware will need to start the policy from the current pose
+    under the max_step rate cap (out of scope here).
 ```
 
 ## Units

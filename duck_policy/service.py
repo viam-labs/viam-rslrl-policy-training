@@ -2,7 +2,8 @@
 duck that serves the io DoCommand (viam-labs:mujoco-sim's robot now; a hardware module later), with
 inference through an mlmodel service (viam:mlmodel:onnx-cpu). DoCommand: start, stop, status,
 set_command {vx, vy, wz}. Optional attribute world (the mujoco-sim world): start then recovers a fallen duck
-by pause/reset/start/play. See spec unit 4."""
+by pause/reset/torque-on/start/play (this unpauses a paused world). In sim every start whose pose is off
+STAND resets the whole world (the duck returns to its spawn point): there is no stop-then-resume-from-here. See spec unit 4."""
 
 from __future__ import annotations
 
@@ -21,7 +22,7 @@ from viam.services.mlmodel import MLModel
 from viam.utils import struct_to_dict
 
 from .io import SimIO
-from .loop import Limits, PolicyLoop
+from .loop import RAMP_THRESHOLD, Limits, PolicyLoop
 from .obs import Command
 
 UPRIGHT_GRAVITY_Z = -0.9  # ~25 degrees of tilt
@@ -61,6 +62,7 @@ class DuckPolicy(Generic, EasyResource):
         self.input_name = self.cfg["model"]["input"]
         self.output_name = self.cfg["model"]["output"]
         self.task, self.loop, self.command = None, None, Command()
+        self._start_lock = asyncio.Lock()
 
     async def _infer(self, obs: np.ndarray) -> np.ndarray:
         out = await self.mlmodel.infer({self.input_name: obs[None].astype(np.float32)})
@@ -71,24 +73,35 @@ class DuckPolicy(Generic, EasyResource):
             return "idle"
         return "running" if not self.task.done() else "stopped"
 
+    async def _start(self) -> dict:
+        if self._state() == "running":
+            raise ValueError("already running")
+        io = SimIO(self.duck, self.cfg["joints"])
+        recover: str | bool = False
+        if self.world is not None:
+            # a hung duck must not hold the start lock forever
+            snap = await asyncio.wait_for(io.read(), self.limits.call_timeout_s * 10)
+            far = np.abs(np.asarray(snap.q) - np.asarray(self.cfg["default_pose"])).max() >= RAMP_THRESHOLD
+            # off_pose: the loop would ramp to default with no policy; in sim the reset replaces the ramp
+            recover = "fallen" if snap.gravity[2] > UPRIGHT_GRAVITY_Z else "off_pose" if far else False
+        try:
+            if recover:
+                await self.world.do_command({"command": "pause"})
+                await self.world.do_command({"command": "reset"})
+                await asyncio.wait_for(io.torque(True), self.limits.call_timeout_s * 10)  # stiff before physics resumes
+            self.loop = PolicyLoop(io, self._infer, self.cfg, self.limits)
+            self.loop.set_command(self.command)
+            self.task = asyncio.create_task(self.loop.run())
+        finally:
+            if recover:  # never leave the world paused
+                await self.world.do_command({"command": "play"})
+        return {"state": "running", "recovered": recover}
+
     async def do_command(self, command, *, timeout=None, **kwargs):
         match command.get("command"):
             case "start":
-                if self._state() == "running":
-                    raise ValueError("already running")
-                io = SimIO(self.duck, self.cfg["joints"])
-                recover = self.world is not None and (await io.read()).gravity[2] > UPRIGHT_GRAVITY_Z
-                try:
-                    if recover:
-                        await self.world.do_command({"command": "pause"})
-                        await self.world.do_command({"command": "reset"})
-                    self.loop = PolicyLoop(io, self._infer, self.cfg, self.limits)
-                    self.loop.set_command(self.command)
-                    self.task = asyncio.create_task(self.loop.run())
-                finally:
-                    if recover:  # never leave the world paused
-                        await self.world.do_command({"command": "play"})
-                return {"state": "running", "recovered": recover}
+                async with self._start_lock:
+                    return await self._start()
             case "stop":
                 if self.task and not self.task.done():
                     self.task.cancel()
