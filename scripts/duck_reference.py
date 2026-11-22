@@ -41,6 +41,7 @@ def opt_summary(model) -> dict:
 def set_script(script) -> None:
     """Replace SCRIPT in place (importers hold the list) and recompute DURATION."""
     global DURATION
+    assert script, "empty command script"
     SCRIPT[:] = [tuple(map(float, seg)) for seg in script]
     DURATION = sum(seg[0] for seg in SCRIPT)
 

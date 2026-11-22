@@ -133,7 +133,7 @@ async def ours(cell_json: Path, out: Path, episodes: int) -> None:
             await walker.do_command({"command": "stop"})
             after = await world.do_command({"command": "status"})
             await world.do_command({"command": "pause"})
-            results.append({"episode": ep, "samples": samples, "walker": status,
+            results.append({"episode": ep, "script": ref.SCRIPT, "samples": samples, "walker": status,
                             "slips": after.get("slips", 0) - before.get("slips", 0),
                             "real_time_factor": after.get("real_time_factor")})
             reason = status.get("reason")
@@ -147,6 +147,9 @@ def report(ref_path: Path, ours_path: Path, md: Path) -> None:
     ref_data = json.loads(ref_path.read_text())
     ref.set_script(ref_data.get("script") or ref.DEFAULT_SCRIPT)  # the script the reference ran, so the sides can't drift
     eps = json.loads(ours_path.read_text())
+    for e in eps:  # older runs didn't record it
+        if "script" in e and [list(seg) for seg in e["script"]] != [list(seg) for seg in ref.SCRIPT]:
+            raise SystemExit(f"episode {e['episode']} ran a different script than the reference")
     ref_track, ref_fell = tracking(ref_data["samples"]), fell(ref_data["samples"])
     clean = [e for e in eps if e["slips"] == 0]
     tracks = [tracking(e["samples"]) for e in clean]
