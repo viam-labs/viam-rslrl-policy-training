@@ -830,7 +830,7 @@ def test_build_config_phase_variant():
     - Update the parquet arguments' help from "ignored" to "sequence dataset (dance)".
   - **Thread the task id.** `TASK` stays the velocity id. The dance id comes from `register_dance_task(...)`'s return value, so `train.py` defines no dance constant and never imports `dance_task` at module level.
     - `_cfgs(args, task)`, `export_and_verify(task, ckpt, onnx_out)`, and `run_train(task, …)` take the id.
-    - `write_package(out, log_dir, env_cfg, agent, task, command, extra)` writes the `command` it's given; it doesn't read `twist`. `source["task"]` is `task`. `extra` is a dict of file name → JSON written into the package.
+    - `write_package(out, log_dir, env_cfg, agent, task, command, extra)` writes the `command` it's given; it doesn't read `twist`. `source["task"]` is `task`. `extra` is a dict of file name → JSON written into the package. Nothing extra is written when it's empty, so the velocity package's files stay exactly as today.
     - `probe()` keeps working for velocity: update its calls to `_cfgs(args, TASK)` and `export_and_verify(TASK, …)`.
   - **In `train()`, in this order:**
     1. If `args.task == "dance"`:
@@ -1153,7 +1153,7 @@ def test_dance_metrics_perfect_and_drifting():
 - [ ] **Step 2:** Run it; expect it to fail.
 
 - [ ] **Step 3: Implement in `duck_parity.py`:**
-  - Replace the hand-rolled `sys.argv` parsing with `argparse` subcommands (`ours`, `report`, `handover`). The existing flags keep their names. This refactor is in scope.
+  - Replace the hand-rolled `sys.argv` parsing with `argparse` subcommands (`ours`, `report`, `handover`). The existing flags keep their names. This refactor is in scope. Keep `--script` working for `ours` (today `__main__` strips it from `sys.argv` before dispatching).
   - Put the repo root on `sys.path` and import `duck_train.dance` (`table_at`, `feet_world`). Add `mujoco` to the PEP 723 dependencies.
   - `dance_metrics(samples, table, duck_xml) -> dict`:
     - **`joint_rmse`:** over samples with `t < cycles × period`, RMS of `q − table_at(table, (t / period) % 1)` across all joints and samples.
