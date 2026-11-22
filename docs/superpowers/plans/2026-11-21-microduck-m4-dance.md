@@ -844,7 +844,6 @@ def test_build_config_phase_variant():
     2. `env_cfg, agent = _cfgs(args, task)`. This must come after registration, because `load_env_cfg` needs the task registered.
     3. For velocity, build `command` from `env_cfg.commands["twist"].ranges` (the code moved out of `write_package`).
     4. `source` gets `"dance": args.dance` for dance jobs, and video `TAGS` get `args.task`.
-  - Add a unit test that `probe`'s and `train`'s helper calls match the new signatures, at least that `_cfgs` / `export_and_verify` are only ever called with a task id: `grep -n "_cfgs(\|export_and_verify(" duck_train/train.py` in Step 7, and eyeball it.
 
 - [ ] **Step 5: `duck_train/dance_task.py`** (image only; imports at module top are fine, since only `train.py` imports it lazily):
 
@@ -949,7 +948,7 @@ def register_dance_task(table, period_s: float) -> str:
   2. In `container/Dockerfile.duck`, add `pandas pyarrow` to the `uv pip install` line, and `pandas, pyarrow` to the import check.
   3. In `duck_train/setup.py`, bump `version` to `0.2.0`, and update `tests/test_duck_train.py::test_duck_sdist_shim` (it hard-codes `microduck_train-0.1.0/model/training.py`) to the 0.2.0 path.
 
-- [ ] **Step 7:** Run `uv run pytest -q` (pass) and `./build_duck.sh`. The tar listing shows `robot.py`, `dance.py`, `dance_rewards.py` and `dance_task.py`. Then run `docker build --platform linux/amd64 -f container/Dockerfile.duck -t microduck-train:dev container/` and the image checks from Step 5.
+- [ ] **Step 7:** Run `uv run pytest -q` (pass), then `grep -n "_cfgs(\|export_and_verify(\|run_train(" duck_train/train.py`: every call passes a task id, including the ones in `probe()`. Then run `./build_duck.sh`. The tar listing shows `robot.py`, `dance.py`, `dance_rewards.py` and `dance_task.py`. Then run `docker build --platform linux/amd64 -f container/Dockerfile.duck -t microduck-train:dev container/` and the image checks from Step 5.
 
 - [ ] **Step 8: Commit**
 
