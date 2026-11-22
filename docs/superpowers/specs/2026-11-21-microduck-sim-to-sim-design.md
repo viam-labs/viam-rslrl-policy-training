@@ -275,7 +275,7 @@ gRPC round trips add some in sim, and parity shows whether injection is needed.
 | Bad action | NaN, inf, or \|action\| above the manifest's bound (2x the p99.9 of reference rollouts if the manifest has none) | torque off |
 | Overruns | more than 5 % of the last 50 ticks late, or 3 in a row | stop, torque on, hold the last targets |
 | Stale state | snapshot `t` not advanced since the last tick | stop, torque on, hold the last targets |
-| World reset | snapshot `generation` differs from the last tick's | not a stop: re-sync and keep running (a reset puts the duck at STAND; last action zeroed, rate cap from the current pose; counted in `status.resets`) |
+| World reset or scene rebuild | snapshot `generation` differs from the last tick's | not a stop: re-sync and keep running (a reset puts the duck at STAND, a rebuild keeps the pose; last action zeroed, rate cap from the current pose; counted in `status.resets`) |
 | Hung call | `io` or `Infer` exceeds 50 ms (was 15 ms; a rare stall killed a live episode, p99 is about 6 ms) | stop, torque on, hold the last targets |
 | Bad command | `set_command` outside the trained twist ranges | clip, and note it in `status` |
 
