@@ -109,3 +109,21 @@ stick, and turns past about 60 %.
   - release LB → it stops and stands;
   - Select stops the walker; Start starts it;
   - hold LB, close the tab, and record whether the duck keeps walking (it tests the known limit).
+
+## Results (2026-11-22)
+
+Driven on `microduck-preview` with webgamepad and a 0810:0001 USB Gamepad: the duck walks, turns
+and stands from the pad.
+
+- **The pad isn't standard-mapped in the browser,** so webgamepad gets its raw order: LB is
+  `AbsoluteZ` (1.0 pressed), the left stick's up/down axis (4) isn't sent at all, and the other
+  axes shift. This is why `mapping` exists. The live machine uses
+  `{"hold": "AbsoluteZ", "vx": "AbsoluteRX", "vy": "AbsoluteY", "wz": "AbsoluteRY"}`: hold LB,
+  right stick up/down walks, right stick left/right strafes, left stick left/right turns.
+  `duck-sim-machine.json` keeps the default mapping.
+- **A world reset no longer stops the walker:** the loop re-syncs (`status.resets`) and keeps
+  balancing at STAND.
+- **Start recovers the duck:** with the walker's `world` attribute, Start on a fallen duck, or one
+  posed off STAND (e.g. after Select), pauses, resets, turns torque on, starts the policy and plays.
+  Verified: `recovered: "fallen"` and `"off_pose"`, both upright after 5 s at 50 Hz.
+- **Not yet recorded:** the known-limit check (hold LB, close the tab, does the duck keep walking).
