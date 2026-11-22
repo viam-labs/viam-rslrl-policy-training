@@ -299,13 +299,13 @@ def test_foot_check_fails_one_knee():
     knee = JOINTS.index("left_knee")
     lift = {"name": "lift", "period_s": 6.0, "keyframes": [
         {"t": 0.0, "pose": {}},
-        {"t": 0.5, "pose": {"left_knee": float(STAND[knee] - 0.8), "left_hip_pitch": float(STAND[2] - 0.6)}},
+        {"t": 0.5, "pose": {"left_knee": float(STAND[knee] + 0.8), "left_hip_pitch": float(STAND[2] + 0.6)}},
     ]}
     errors = foot_check(lift, DUCK_XML)
     assert any("lifts" in e for e in errors), errors
 ```
 
-  If `left_knee − 0.8` straightens the leg instead of bending it (check the sign by looking at foot z in a scratch run), flip both signs. The test only needs a pose that raises one foot by more than 1 cm.
+  (Checked against `dist/duck-sim/duck.xml`: `+0.8 / +0.6` lifts the left foot 2.4 cm; `−` only lowers it 0.9 cm.)
 
 - [ ] **Step 2:** Run the new tests; expect them to fail with an `ImportError`.
 
@@ -489,7 +489,7 @@ def test_split_and_join_arms():
 
     Read `SequenceResourceFilter`'s fields in `viam.proto.app.data` before using it (`uv run python -c "from viam.proto.app.data import SequenceResourceFilter as S; print(S.DESCRIPTOR.fields_by_name.keys())"`).
 
-  `record` runs on the same host as the choreo machine's viam-server (spec Part 2, step 5), which this plan's setup guarantees.
+  `record` runs on the same host as the choreo machine's viam-server (spec Part 2, step 5), which this plan's setup guarantees. Deviation from the spec: `record` stops at creating the sequence. Creating the dataset and adding the sequence are controller steps (Task 5), because they need org-level access the machine key doesn't have.
 
 - [ ] **Step 4:** Run `uv run pytest tests/test_duck_dance.py -q` (pass), then `uv run scripts/duck_choreo.py check dances/does-not-exist.json` (a clear error, not a traceback).
 
@@ -537,6 +537,8 @@ Machine-facing work. The controller runs it; it needs the user's confirmation be
 ## Part 2: training
 
 ### Task 6: `build_reference`
+
+Blocked until Task 5 Step 6 has committed `tests/data/dance_parquet_sample.json`.
 
 **Files:**
 - Modify: `duck_train/dance.py`, `pyproject.toml` (dev deps), `tests/test_duck_dance.py`
@@ -598,7 +600,7 @@ def test_build_reference_recovers_the_dance(tmp_path):
     period, table = build_reference(*write_parquet(tmp_path, BOB, jitter=0.002), dance="t")
     assert period == 6.0 and table.shape == (100, 14)
     want = np.stack([interpolate(BOB, (k + 0.5) / 100) for k in range(100)])
-    assert np.abs(table - want).max() < 0.02  # 40 ms lag on a 6 s loop + jitter
+    assert np.abs(table - want).max() < 0.02  # looser than the spec's 0.01: the test adds a 40 ms actuator lag on purpose
 
 
 @pytest.mark.parametrize("tags,match", [(["dance:other", "period:6.0"], "no sequence"),
@@ -626,7 +628,7 @@ def test_build_reference_rejects_inconsistent_cycles(tmp_path):
     3. Read `tabular_file`, keeping rows of the selected sequences whose `method_name` contains `JointPositions`.
     4. For each sequence: build the grid `np.arange(start, end, 0.02)` in seconds (convert tz-aware timestamps with `.timestamp()` or by subtracting the epoch). For each arm, `np.interp` each joint onto the grid from that arm's rows sorted by timestamp, then `np.radians`. Concatenate into (N, 14). If an arm has no rows, raise `ValueError`.
     5. `phase = ((grid − start) / period) % 1`; bin index `min(int(phase × bins), bins − 1)`. Accumulate the sum, sum of squares and count over all sequences.
-    6. `table = sum / count`; `spread = sqrt(max(sumsq / count − table², 0))`. Raise `ValueError` if any count is 0 (`"empty bin"`), if `spread.max() > 0.05` (`"spread … rad across cycles"`), or if `|table[0] − STAND|.max() > 0.05` (`"bin 0 isn't STAND"`).
+    6. `table = sum / count`; `spread = sqrt(max(sumsq / count − table², 0))`. Run the checks **in this order**, so that a noisy recording reports its spread rather than bin 0: raise `ValueError` if any count is 0 (`"empty bin"`), then if `spread.max() > 0.05` (`"spread … rad across cycles"`), then if `|table[0] − STAND|.max() > 0.05` (`"bin 0 isn't STAND"`).
   - `binary_file` is unused (the dance has no images). Keep the parameter so the call mirrors the three job arguments.
 
 - [ ] **Step 5:** Run `uv run pytest -q`; expect it to pass.
@@ -665,8 +667,9 @@ class Asset:
         self.order = list(reversed(JOINTS))  # a joint order different from the policy's, as in mjlab
         self.data = SimpleNamespace(joint_pos=torch.as_tensor(q, dtype=torch.float32))
 
-    def find_joints(self, names):
-        return [self.order.index(n) for n in names], names
+    def find_joints(self, names, preserve_order=False):
+        ids = [self.order.index(n) for n in names]
+        return (ids, names) if preserve_order else (sorted(ids), [self.order[i] for i in sorted(ids)])
 
 
 class Scene(dict):
@@ -753,7 +756,7 @@ def _table(table, device) -> torch.Tensor:
 
 def _error(env, command_name, table, asset_name):
     asset = env.scene[asset_name]
-    ids, _ = asset.find_joints(JOINTS)
+    ids, _ = asset.find_joints(JOINTS, preserve_order=True)
     cur = asset.data.joint_pos[:, ids]
     tgt = table_at_torch(_table(table, cur.device), phase_of(env.command_manager.get_command(command_name)))
     return cur - tgt
@@ -772,7 +775,7 @@ def feet_contact(env, sensor_name: str = "feet_ground_contact") -> torch.Tensor:
     return (found[:, :2] > 0).all(dim=-1).float()
 ```
 
-  `find_joints` in mjlab may return ids in name-match order or in asset order. Pollen resolves one name at a time (`find_joints([n])[0][0]`), which is order-safe. If mjlab 1.3.0's `find_joints(list)` doesn't preserve the given order (check `mjlab/entity/entity.py` in the image with `docker run --rm --platform linux/amd64 microduck-train:dev sed -n '/def find_joints/,/^    def /p' /opt/venv/lib/python3.12/site-packages/mjlab/entity/entity.py`), switch `_error` to the per-name form and cache the ids on the asset. The fake `Asset` preserves the given order, so the test covers the mapping either way.
+  mjlab's `find_joints` defaults to `preserve_order=False` (asset order). The rewards pass `preserve_order=True`, and the fake `Asset` returns asset order without it, so the test fails if the flag is dropped. Confirm that mjlab 1.3.0 has the flag in the image (`docker run --rm --platform linux/amd64 microduck-train:dev grep -n "def find_joints" -A6 /opt/venv/lib/python3.12/site-packages/mjlab/entity/entity.py`). If it doesn't, resolve one name at a time, as Pollen does (`find_joints([n])[0][0]`).
 
 - [ ] **Step 4:** Run `uv run pytest tests/test_duck_dance_rewards.py -q`; expect it to pass.
 
@@ -825,19 +828,23 @@ def test_build_config_phase_variant():
     - Change `--max_iterations` to default `None`, resolved after parsing to 4000 (velocity) or 2000 (dance).
     - After parsing, for `task == "dance"`, require `--dance`, `--tabular_data_file` and `--sequences_file`, or `p.error(...)`, which raises `SystemExit`.
     - Update the parquet arguments' help from "ignored" to "sequence dataset (dance)".
-  - **Thread the task id.** `TASK` stays the velocity id, and `DANCE_TASK = "Mjlab-Dance-Flat-MicroDuck"` is added. Then:
-    - `_cfgs(args, task)`, `export_and_verify(task, ckpt, onnx_out)` and `run_train(task, …)` take the id;
-    - `write_package(out, log_dir, env_cfg, agent, task, command, extra)` takes the id and the command;
-    - `extra` is a dict of file name → JSON written into the package.
-  - **In `train()`:**
-    - If `args.task == "dance"`: `period, table = build_reference(args.binary_data_file, args.tabular_data_file, args.sequences_file, args.dance)`, then `register_dance_task(table, period)` (lazily `from .dance_task import register_dance_task`).
-    - `command = {"mode": "phase", "period_s": period}`.
-    - `extra = {"reference.json": {"period_s": period, "joints": JOINTS, "table": table.round(5).tolist()}}`.
-    - `source` adds `"dance": args.dance`.
-    - Otherwise, the command is the velocity twist as today.
-    - Log the reference's shape and spread before training starts.
-  - In `write_package`, `twist` is read only for velocity.
-  - `TAGS` gets `args.task` added for video uploads.
+  - **Thread the task id.** `TASK` stays the velocity id. The dance id comes from `register_dance_task(...)`'s return value, so `train.py` defines no dance constant and never imports `dance_task` at module level.
+    - `_cfgs(args, task)`, `export_and_verify(task, ckpt, onnx_out)`, and `run_train(task, …)` take the id.
+    - `write_package(out, log_dir, env_cfg, agent, task, command, extra)` writes the `command` it's given; it doesn't read `twist`. `source["task"]` is `task`. `extra` is a dict of file name → JSON written into the package.
+    - `probe()` keeps working for velocity: update its calls to `_cfgs(args, TASK)` and `export_and_verify(TASK, …)`.
+  - **In `train()`, in this order:**
+    1. If `args.task == "dance"`:
+       - `period, table = build_reference(args.binary_data_file, args.tabular_data_file, args.sequences_file, args.dance)`;
+       - `task = register_dance_task(table, period)` (`from .dance_task import register_dance_task` inside the branch);
+       - `command = {"mode": "phase", "period_s": period}`;
+       - `extra = {"reference.json": {"period_s": period, "joints": JOINTS, "table": table.round(5).tolist()}}`;
+       - log the table's shape.
+
+       Otherwise: `task = TASK` and `extra = {}`.
+    2. `env_cfg, agent = _cfgs(args, task)`. This must come after registration, because `load_env_cfg` needs the task registered.
+    3. For velocity, build `command` from `env_cfg.commands["twist"].ranges` (the code moved out of `write_package`).
+    4. `source` gets `"dance": args.dance` for dance jobs, and video `TAGS` get `args.task`.
+  - Add a unit test that `probe`'s and `train`'s helper calls match the new signatures, at least that `_cfgs` / `export_and_verify` are only ever called with a task id: `grep -n "_cfgs(\|export_and_verify(" duck_train/train.py` in Step 7, and eyeball it.
 
 - [ ] **Step 5: `duck_train/dance_task.py`** (image only; imports at module top are fine, since only `train.py` imports it lazily):
 
@@ -936,14 +943,13 @@ def register_dance_task(table, period_s: float) -> str:
   - The `head_pose` / `body_pose` `ranges` type. If it's a dataclass rather than a tuple of pairs, zero each field instead.
   - Every name in `REMOVED_*` exists in both `play=False` and `play=True` configs. If one is missing in play, use `pop(name, None)` for play only, and say so in a comment.
   - `make_dance_env_cfg(np.zeros((100, 14)), 6.0)` builds without error on CPU. Building the config doesn't need a GPU.
-  - `train.py` puts `DANCE_TASK` in its own module so `parse_args` doesn't import `dance_task`. Import `DANCE_TASK` from `dance_task` only inside `train()`.
 
 - [ ] **Step 6: Ship it.**
   1. In `build_duck.sh`, add `duck_train/dance.py duck_train/dance_rewards.py duck_train/dance_task.py` to the `cp` line.
   2. In `container/Dockerfile.duck`, add `pandas pyarrow` to the `uv pip install` line, and `pandas, pyarrow` to the import check.
-  3. In `duck_train/setup.py`, bump `version` to `0.2.0`.
+  3. In `duck_train/setup.py`, bump `version` to `0.2.0`, and update `tests/test_duck_train.py::test_duck_sdist_shim` (it hard-codes `microduck_train-0.1.0/model/training.py`) to the 0.2.0 path.
 
-- [ ] **Step 7:** Run `uv run pytest -q` (pass) and `./build_duck.sh`. The tar listing shows the three new modules. Then run `docker build --platform linux/amd64 -f container/Dockerfile.duck -t microduck-train:dev container/` and the image checks from Step 5.
+- [ ] **Step 7:** Run `uv run pytest -q` (pass) and `./build_duck.sh`. The tar listing shows `robot.py`, `dance.py`, `dance_rewards.py` and `dance_task.py`. Then run `docker build --platform linux/amd64 -f container/Dockerfile.duck -t microduck-train:dev container/` and the image checks from Step 5.
 
 - [ ] **Step 8: Commit**
 
@@ -1148,6 +1154,7 @@ def test_dance_metrics_perfect_and_drifting():
 - [ ] **Step 2:** Run it; expect it to fail.
 
 - [ ] **Step 3: Implement in `duck_parity.py`:**
+  - Replace the hand-rolled `sys.argv` parsing with `argparse` subcommands (`ours`, `report`, `handover`). The existing flags keep their names. This refactor is in scope.
   - Put the repo root on `sys.path` and import `duck_train.dance` (`table_at`, `feet_world`). Add `mujoco` to the PEP 723 dependencies.
   - `dance_metrics(samples, table, duck_xml) -> dict`:
     - **`joint_rmse`:** over samples with `t < cycles × period`, RMS of `q − table_at(table, (t / period) % 1)` across all joints and samples.
@@ -1160,6 +1167,7 @@ def test_dance_metrics_perfect_and_drifting():
     - In phase mode, `start` is sent as `{"command": "start", "cycles": cycles}`, and no `set_command` is sent.
     - Samples gain `"q": s["q"]`, in both modes.
     - The episode record stores `"phase": ref.PHASE`.
+    - Phase alignment: ours' `t` starts at the first `io` read after `start`, while the dancer's phase starts at its loop's `t0` (after warm-up). Record the offset as `status.run_s` vs the io time span, and report it. A few tens of ms are expected and are within the 1.25× allowance.
   - `report`:
     - If the reference JSON has `"phase"`, call `ref.set_phase(**phase)`, require `--reference-table <reference.json>` and `--duck-xml` (default `dist/duck-sim/duck.xml`), and build the phase checks (spec Part 3, "Evaluation"):
       - slip-free ≥ 18/20;
