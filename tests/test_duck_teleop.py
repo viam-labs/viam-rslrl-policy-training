@@ -5,7 +5,7 @@ from viam.components.input import Control, Event, EventType
 from viam.proto.app.robot import ComponentConfig
 from viam.utils import dict_to_struct
 
-from duck_policy.teleop import REFRESH_S, Teleop, TeleopState, map_events
+from duck_policy.teleop import REFRESH_S, Mapping, Teleop, TeleopState, map_events
 
 P, H, R = EventType.BUTTON_PRESS, EventType.BUTTON_HOLD, EventType.BUTTON_RELEASE
 ABS = EventType.POSITION_CHANGE_ABSOLUTE
@@ -81,6 +81,38 @@ def test_presses_present_on_the_first_poll_are_stale():
     assert map_events(old, state)[1] == []
     assert map_events(old, state)[1] == []
     assert map_events(events(ev(Control.BUTTON_START, P, 1.0, t=7.0)), state)[1] == ["start"]
+
+
+def test_axis_hold():
+    m = Mapping(hold="AbsoluteZ")
+    stick = ev(Control.ABSOLUTE_Y, ABS, -1.0)
+    for z, expect in ((1.0, (0.4, 0.0, 0.0)), (0.0, (0.0, 0.0, 0.0)), (0.4, (0.0, 0.0, 0.0))):
+        twist, _ = map_events(events(ev(Control.ABSOLUTE_Z, ABS, z), stick), primed(), m)
+        assert twist == pytest.approx(expect)
+
+
+def test_remapped_axes_and_buttons():
+    m = Mapping(wz="AbsoluteRY", start="ButtonSouth")
+    twist, _ = map_events(held(ev(Control.ABSOLUTE_RY, ABS, -1.0), ev(Control.ABSOLUTE_RX, ABS, -1.0)), primed(), m)
+    assert twist == pytest.approx((0.0, 0.0, 1.0))  # RX no longer drives wz
+    state = primed()
+    _, actions = map_events(events(ev(Control.BUTTON_SOUTH, P, 1.0, t=5.0)), state, m)
+    assert actions == ["start"]
+    _, actions = map_events(events(ev(Control.BUTTON_SOUTH, P, 1.0, t=5.0)), state, m)
+    assert actions == []
+    _, actions = map_events(events(ev(Control.BUTTON_START, P, 1.0, t=6.0)), state, m)
+    assert actions == []
+
+
+def test_validate_mapping():
+    base = {"input_controller": "WebGamepad", "policy": "walker"}
+    for bad, match in (({"nope": "AbsoluteZ"}, "hold"), ({"hold": "Bogus"}, "hold.*Bogus"), ("AbsoluteZ", "mapping")):
+        with pytest.raises(ValueError, match=match):
+            Teleop.validate_config(tcfg({**base, "mapping": bad}))
+    deps, _ = Teleop.validate_config(tcfg({**base, "mapping": {"hold": "AbsoluteZ", "wz": "AbsoluteRY"}}))
+    assert sorted(deps) == ["WebGamepad", "walker"]
+
+
 def tcfg(attrs):
     return ComponentConfig(name="teleop", api="rdk:service:generic", model="devrel:duck-policy:teleop",
                            attributes=dict_to_struct(attrs))
@@ -119,7 +151,7 @@ class StubPolicy:
 def make():
     t = Teleop("teleop")
     ctl, pol = StubController(), StubPolicy()
-    t._configure(ctl, pol)
+    t._configure(ctl, pol, Mapping())
     return t, ctl, pol
 
 

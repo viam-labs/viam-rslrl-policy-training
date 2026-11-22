@@ -11,7 +11,6 @@ duck's Pi (the Linux `gamepad` model), with no code change: only the config chan
 
 Out of scope:
 - head pose and body pose commands (the walker doesn't expose them yet);
-- configurable button and axis mapping (fixed defaults until a real controller needs otherwise);
 - driving the dance service.
 
 ## The `teleop` service
@@ -28,6 +27,12 @@ module (`duck_policy/teleop.py`, registered in `duck_policy/main.py` and `meta.j
 - **`policy`** (required): any generic service that accepts the walker's DoCommands:
   `set_command {vx, vy, wz}`, `start` and `stop`. It's named `policy`, not `walker`, so later
   policy services can be driven the same way.
+- **`mapping`** (optional): an object with any of `hold` (default `ButtonLT`), `vx` (`AbsoluteY`),
+  `vy` (`AbsoluteX`), `wz` (`AbsoluteRX`), `start` (`ButtonStart`), `stop` (`ButtonSelect`). Values
+  are Viam Control names; scales, signs and the dead zone stay fixed. `hold` may be a button or an
+  axis (held above 0.5). A gamepad the browser doesn't recognise reaches webgamepad in raw order,
+  e.g. the 0810:0001 USB Gamepad's LB arrives as `AbsoluteZ`. An unknown key or Control name is a
+  config error.
 - **Validation:** both are returned as required dependencies from `validate_config`. A missing
   attribute is a config error.
 - **No scaling attributes:** teleop maps the sticks to the policy's trained range, and the policy
@@ -42,7 +47,7 @@ reconfigure, runs at 20 Hz:
    `Event.time` in epoch seconds). The controller only returns controls that have had an event, so a
    missing control means not held, or axis 0.
 2. **Map** the events to an action with a pure function, `map_events(events, state) -> (twist, action)`:
-   - **Hold-to-drive:** the twist is non-zero only while `ButtonLT` (the left bumper) is held:
+   - **Hold-to-drive:** the twist is non-zero only while the hold control (default `ButtonLT`, the left bumper) is held:
      its latest event is `ButtonPress` or `ButtonHold` (the Linux gamepad sends `ButtonHold` with
      value 2 on key-repeat). Anything else (`ButtonRelease`, `Connect`, missing) is released.
      Releasing it gives a zero twist at once.
@@ -51,8 +56,8 @@ reconfigure, runs at 20 Hz:
      - `vx = −AbsoluteY × 0.4`
      - `vy = −AbsoluteX × 0.3`
      - `wz = −AbsoluteRX × 1.0`
-   - **Buttons:** a new `ButtonPress` on `ButtonStart` (one newer than the last handled, by event
-     time) sends `start`. A new press on `ButtonSelect` sends `stop`.
+   - **Buttons:** a new `ButtonPress` on the start control (default `ButtonStart`; one newer than the last handled, by event
+     time) sends `start`. A new press on the stop control (default `ButtonSelect`) sends `stop`.
    - **No stale presses:** webgamepad keeps its last events for the life of the component, across
      teleop restarts. So the first poll after `new` or `reconfigure` only records the current
      Start and Select event times as handled; only presses after that count.
