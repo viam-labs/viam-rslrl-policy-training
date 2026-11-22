@@ -17,14 +17,17 @@ class FakeIO:
     """Sim time advances 20 ms per read; gravity and generation can be scripted per read."""
 
     def __init__(self, gravity=lambda i: [0, 0, -1], generation=lambda i: 1, frozen=False, hang_at=None,
-                 q=None, slow_at=None, repeat_at=None, torque_fails=False):
+                 q=None, slow_at=None, repeat_at=None, torque_fails=False, reset_at=None):
         self.i, self.writes, self.torques = 0, [], []
         self.q, self.slow_at, self.repeat_at, self.torque_fails = q or DEFAULT, slow_at, repeat_at, torque_fails
         self.gravity, self.generation, self.frozen, self.hang_at = gravity, generation, frozen, hang_at
+        self.reset_at = reset_at  # after this read index, t counts from 0 again and generation is 2
 
     def _snap(self):
-        return Snapshot(t=0.0 if self.frozen else 0.02 * (self.i - (self.i == self.repeat_at)), q=list(self.q), dq=[0.0] * 14, gyro=[0, 0, 0],
-                        gravity=self.gravity(self.i), generation=self.generation(self.i), torque=True)
+        after = self.reset_at is not None and self.i > self.reset_at
+        i = self.i - self.reset_at if after else self.i
+        return Snapshot(t=0.0 if self.frozen else 0.02 * (i - (self.i == self.repeat_at)), q=list(self.q), dq=[0.0] * 14, gyro=[0, 0, 0],
+                        gravity=self.gravity(self.i), generation=2 if after else self.generation(self.i), torque=True)
 
     async def read(self):
         self.i += 1
@@ -77,13 +80,23 @@ def test_bad_action_goes_limp():
     assert reason2 == "bad_action"
 
 
-def test_stale_state_and_rebuild_stop_and_hold():
+def test_stale_state_stops_and_holds():
     io = FakeIO(frozen=True)
     _, reason = loop(io)
     assert reason == "stale_state" and io.torques == [True]  # held, not limp
-    io2 = FakeIO(generation=lambda i: 1 if i < 20 else 2)
-    _, reason2 = loop(io2)
-    assert reason2 == "rebuilt" and io2.torques == [True]
+
+
+def test_world_reset_resyncs_and_keeps_running():
+    io, seen = FakeIO(reset_at=20), []
+
+    def infer(obs):
+        seen.append(obs.copy())
+        return np.full(14, 2.0, np.float32)
+
+    lp, reason = loop(io, infer=infer, ticks=40)
+    assert reason == "max_ticks" and lp.status()["resets"] == 1 and io.torques == [True]
+    assert seen[20][34:48].any() and not seen[21][34:48].any()  # seen[0] is the warmup call; reset tick is seen[21]
+    assert np.abs(np.array(io.writes[20]) - DEFAULT).max() <= 0.5 + 1e-9  # rate cap from snap.q
 
 
 def test_hung_call_stops():

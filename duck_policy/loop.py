@@ -53,7 +53,7 @@ class PolicyLoop:
         self.max_step = float(safety.get("max_step_rad", 0.5))
         self.command, self.command_clipped = Command(), False
         self.ticks, self.late, self.reason, self.last_obs, self.t0, self.t_end = 0, 0, None, None, None, None
-        self.warmup_ms = None
+        self.warmup_ms, self.resets = None, 0
         self.tick_ms: deque[float] = deque(maxlen=3000)
 
     def set_command(self, command: Command) -> None:
@@ -132,8 +132,12 @@ class PolicyLoop:
             tick_start = time.monotonic()
             snap = await self._call(self.io.read())
             if snap.generation != generation:
-                raise Stop("rebuilt")
-            stale = stale + 1 if snap.t <= prev_t else 0  # a repeated observation is harmless; N in a row isn't
+                # World reset: duck back at STAND, sim time restarts, torque stays on. Re-sync and carry on.
+                generation, prev_t, stale, fall = snap.generation, snap.t, 0, 0
+                last_action, prev_target = np.zeros(14), np.asarray(snap.q, float)
+                self.resets += 1
+            else:
+                stale = stale + 1 if snap.t <= prev_t else 0  # a repeated observation is harmless; N in a row isn't
             if stale >= lim.stale_ticks:
                 raise Stop("stale_state")
             prev_t = max(prev_t, snap.t)
@@ -168,7 +172,7 @@ class PolicyLoop:
         ms = sorted(self.tick_ms)
         pct = (lambda p: round(ms[min(len(ms) - 1, int(p * len(ms)))], 2)) if ms else (lambda p: None)
         run_s = None if self.t0 is None else round((self.t_end or time.monotonic()) - self.t0, 3)
-        return {"ticks": self.ticks, "late": self.late, "run_s": run_s, "warmup_ms": self.warmup_ms,  # run_s: since the loop's t0 (after any ramp)
+        return {"ticks": self.ticks, "late": self.late, "resets": self.resets, "run_s": run_s, "warmup_ms": self.warmup_ms,  # run_s: since the loop's t0 (after any ramp)
                 "tick_ms_p50": pct(0.5), "tick_ms_p99": pct(0.99),
                 "reason": self.reason, "command": [self.command.vx, self.command.vy, self.command.wz],
                 "command_clipped": self.command_clipped}
