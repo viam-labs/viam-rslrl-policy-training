@@ -5,7 +5,7 @@ from viam.components.input import Control, Event, EventType
 from viam.proto.app.robot import ComponentConfig
 from viam.utils import dict_to_struct
 
-from duck_policy.teleop import TeleopState, map_events
+from duck_policy.teleop import REFRESH_S, Teleop, TeleopState, map_events
 
 P, H, R = EventType.BUTTON_PRESS, EventType.BUTTON_HOLD, EventType.BUTTON_RELEASE
 ABS = EventType.POSITION_CHANGE_ABSOLUTE
@@ -81,9 +81,6 @@ def test_presses_present_on_the_first_poll_are_stale():
     assert map_events(old, state)[1] == []
     assert map_events(old, state)[1] == []
     assert map_events(events(ev(Control.BUTTON_START, P, 1.0, t=7.0)), state)[1] == ["start"]
-from duck_policy.teleop import REFRESH_S, Teleop  # noqa: E402
-
-
 def tcfg(attrs):
     return ComponentConfig(name="teleop", api="rdk:service:generic", model="devrel:duck-policy:teleop",
                            attributes=dict_to_struct(attrs))
@@ -109,11 +106,13 @@ class StubController:
 
 
 class StubPolicy:
-    def __init__(self):
-        self.calls = []
+    def __init__(self, fail_first=0):
+        self.calls, self.fail_first = [], fail_first
 
     async def do_command(self, command, **kwargs):
         self.calls.append(command)
+        if len(self.calls) <= self.fail_first:
+            raise RuntimeError("walker down")
         return {}
 
 
@@ -186,3 +185,28 @@ def test_close_sends_zero():
     asyncio.run(t.tick(0.0))
     asyncio.run(t.close())
     assert twists(pol)[-1] == (0.0, 0.0, 0.0)
+
+
+def test_failed_send_is_retried_next_tick():
+    t, ctl, pol = make()
+    pol.fail_first = 1
+    asyncio.run(t.tick(0.0))  # zero twist fails
+    asyncio.run(t.tick(0.05))  # unchanged, not due for a refresh, but must retry
+    assert twists(pol) == [(0.0, 0.0, 0.0)] * 2
+
+
+def test_hung_policy_times_out(monkeypatch):
+    import time
+
+    import duck_policy.teleop as mod
+
+    monkeypatch.setattr(mod, "CALL_TIMEOUT_S", 0.05)
+    t, ctl, pol = make()
+
+    async def hang(command, **kwargs):
+        await asyncio.sleep(10)
+
+    pol.do_command = hang
+    start = time.monotonic()
+    asyncio.run(t.tick(0.0))
+    assert time.monotonic() - start < 1.0

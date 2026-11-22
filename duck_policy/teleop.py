@@ -105,11 +105,13 @@ class Teleop(Generic, EasyResource):
             self.logger.warning(msg)
             self.warned_at = now
 
-    async def _call(self, command: dict, now: float) -> None:
+    async def _call(self, command: dict, now: float) -> bool:
         try:
-            await self.policy.do_command(command)
-        except Exception as e:  # keep polling: the policy may come back
-            self._warn(now, f"policy {command.get('command')}: {e}")
+            await asyncio.wait_for(self.policy.do_command(command), CALL_TIMEOUT_S)
+            return True
+        except Exception as e:  # keep polling: the policy may come back (TimeoutError included)
+            self._warn(now, f"policy {command.get('command')}: {e!r}")
+            return False
 
     async def tick(self, now: float) -> None:
         try:
@@ -124,8 +126,8 @@ class Teleop(Generic, EasyResource):
         twist = twist if healthy else ZERO
         if twist != self.sent or (healthy and now - self.sent_at >= REFRESH_S):
             vx, vy, wz = twist
-            await self._call({"command": "set_command", "vx": vx, "vy": vy, "wz": wz}, now)
-            self.sent, self.sent_at = twist, now
+            if await self._call({"command": "set_command", "vx": vx, "vy": vy, "wz": wz}, now):
+                self.sent, self.sent_at = twist, now  # on failure, retry next tick
 
     async def _run(self) -> None:
         while True:
