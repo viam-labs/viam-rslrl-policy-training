@@ -5,8 +5,7 @@ Run with mujoco-sim's own environment:
     uv run --project /Users/nick.hehr/src/viam-mujoco-sim-floating python scripts/duck_stand_check.py dist/duck-sim [mujoco-sim src dir]
 
 The source dir defaults to $MUJOCO_SIM_SRC, else the floating-base-bam worktree (viam-mujoco-sim
-PR #7, unreleased). Both local-module paths switch to the registry module once a mujoco-sim
-release includes PR #7.
+PR #7, released in 0.21.0); any checkout at 0.21.0 or later works.
 
 With no policy the duck tips forward in about a second, and with the ground-contact model's trunk
 and head collision it then falls onto the floor: the check only asserts the first 0.3 s and prints

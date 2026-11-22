@@ -1,9 +1,10 @@
 {
   "modules": [
     {
-      "type": "local",
-      "name": "mujoco-sim",
-      "executable_path": "/Users/nick.hehr/src/viam-mujoco-sim-floating/run.sh"
+      "type": "registry",
+      "name": "viam-labs_mujoco-sim",
+      "module_id": "viam-labs:mujoco-sim",
+      "version": "0.21.0"
     },
     {
       "type": "registry",

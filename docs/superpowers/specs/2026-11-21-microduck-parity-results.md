@@ -5,7 +5,7 @@
 - **Ours:** Pollen's `velstand` walk policy, driven by our stack on the `microduck-preview` machine:
   - the duck-policy module (50 Hz read-infer-write);
   - `viam:mlmodel:onnx-cpu`;
-  - viam-labs:mujoco-sim with the floating base, BAM and `io` (PR #7);
+  - viam-labs:mujoco-sim with the floating base, BAM and `io` (PR #7, released in 0.21.0);
   - duck-sim 0.2.0 (the ground-contact model).
 - **Reference:** Pollen's own CPU reference (`infer_policy.py`'s code, run headless by
   `scripts/duck_reference.py`) on the same `duck.xml` with the same MuJoCo build.
