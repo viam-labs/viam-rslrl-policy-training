@@ -6,7 +6,8 @@ Drive the MicroDuck's walk policy from any Viam input controller (a gamepad). Th
 twist command, hold-to-drive gates it, and buttons start and stop the policy. The first target is
 the `microduck-preview` sim machine, using `webgamepad` (a gamepad connected to the browser,
 through the Viam app's Control tab). The same code later works with a gamepad plugged into the
-duck's Pi (the Linux `gamepad` model), with no code change: only the `input_controller` name in the config changes.
+duck's Pi (the Linux `gamepad` model), with no code change: only the config changes (the component's model becomes `gamepad`, and
+`input_controller` names it).
 
 Out of scope:
 - head pose and body pose commands (the walker doesn't expose them yet);
