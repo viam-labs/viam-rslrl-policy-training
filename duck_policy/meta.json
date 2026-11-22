@@ -9,6 +9,11 @@
       "api": "rdk:service:generic",
       "model": "devrel:duck-policy:controller",
       "short_description": "50 Hz walk policy loop: read io, infer via mlmodel, write joint targets, with stop conditions."
+    },
+    {
+      "api": "rdk:service:generic",
+      "model": "devrel:duck-policy:teleop",
+      "short_description": "Drives a policy service from an input controller: hold LB, sticks to twist, Start/Select to start/stop."
     }
   ],
   "entrypoint": "run.sh"
