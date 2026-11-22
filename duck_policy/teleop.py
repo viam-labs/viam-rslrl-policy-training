@@ -1,7 +1,8 @@
 """Viam generic service devrel:duck-policy:teleop: drives a policy service (the walker's DoCommands
 start, stop, set_command {vx, vy, wz}) from any input controller. Hold LB to drive: left stick
-vx/vy, right stick wz (optional `mapping` {hold, vx, vy, wz, start, stop} -> Control names). Start starts the policy, Select stops it. A controller error or Disconnect
-sends one zero twist. Spec: docs/superpowers/specs/2026-11-22-microduck-teleop-design.md."""
+vx/vy, right stick wz (optional `mapping` {hold, vx, vy, wz, start, stop} -> Control names).
+Start starts the policy, Select stops it. A controller error or Disconnect sends one zero twist.
+Spec: docs/superpowers/specs/2026-11-22-microduck-teleop-design.md."""
 
 from __future__ import annotations
 
@@ -41,6 +42,12 @@ class Mapping:
                 object.__setattr__(self, f.name, Control(name))
             except ValueError:
                 raise ValueError(f"mapping.{f.name}: {name!r} is not a Control name") from None
+        roles = {}
+        for f in fields(self):
+            roles.setdefault(getattr(self, f.name), []).append(f.name)
+        for control, keys in roles.items():
+            if len(keys) > 1:
+                raise ValueError(f"mapping: each control may have one role; {control.value} is used for {keys}")
 
     @classmethod
     def from_attrs(cls, attrs) -> "Mapping":

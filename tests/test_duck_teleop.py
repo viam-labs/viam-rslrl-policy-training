@@ -109,6 +109,9 @@ def test_validate_mapping():
     for bad, match in (({"nope": "AbsoluteZ"}, "hold"), ({"hold": "Bogus"}, "hold.*Bogus"), ("AbsoluteZ", "mapping")):
         with pytest.raises(ValueError, match=match):
             Teleop.validate_config(tcfg({**base, "mapping": bad}))
+    for dup in ({"start": "ButtonSouth", "stop": "ButtonSouth"}, {"vx": "ButtonLT"}):  # explicit, vs default
+        with pytest.raises(ValueError, match="one role"):
+            Teleop.validate_config(tcfg({**base, "mapping": dup}))
     deps, _ = Teleop.validate_config(tcfg({**base, "mapping": {"hold": "AbsoluteZ", "wz": "AbsoluteRY"}}))
     assert sorted(deps) == ["WebGamepad", "walker"]
 
@@ -242,3 +245,13 @@ def test_hung_policy_times_out(monkeypatch):
     start = time.monotonic()
     asyncio.run(t.tick(0.0))
     assert time.monotonic() - start < 1.0
+
+
+def test_tick_uses_configured_mapping():
+    t = Teleop("teleop")
+    ctl, pol = StubController(), StubPolicy()
+    t._configure(ctl, pol, Mapping(hold="AbsoluteZ"))
+    asyncio.run(t.tick(0.0))  # prime
+    ctl.events = events(ev(Control.ABSOLUTE_Z, ABS, 1.0), ev(Control.ABSOLUTE_Y, ABS, -1.0))
+    asyncio.run(t.tick(0.1))
+    assert twists(pol)[-1] == pytest.approx((0.4, 0.0, 0.0))
