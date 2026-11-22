@@ -170,6 +170,12 @@
         "height": 480,
         "near_m": 0.005
       }
+    },
+    {
+      "name": "WebGamepad",
+      "api": "rdk:component:input_controller",
+      "model": "webgamepad",
+      "attributes": {}
     }
   ],
   "services": [
@@ -189,6 +195,15 @@
         "duck": "duck",
         "mlmodel": "walk-model",
         "package_dir": "${packages.ml_model.microduck-velocity}"
+      }
+    },
+    {
+      "name": "teleop",
+      "api": "rdk:service:generic",
+      "model": "devrel:duck-policy:teleop",
+      "attributes": {
+        "input_controller": "WebGamepad",
+        "policy": "walker"
       }
     }
   ]
