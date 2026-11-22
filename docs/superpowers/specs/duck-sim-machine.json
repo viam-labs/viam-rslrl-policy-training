@@ -29,6 +29,12 @@
       "package": "16518049-9dd3-479f-9644-c5d112aa42d8/microduck-walk",
       "type": "ml_model",
       "version": "0.1.0"
+    },
+    {
+      "name": "microduck-velocity",
+      "package": "16518049-9dd3-479f-9644-c5d112aa42d8/microduck-velocity",
+      "type": "ml_model",
+      "version": "0.1.0"
     }
   ],
   "components": [
@@ -172,7 +178,7 @@
       "api": "rdk:service:mlmodel",
       "model": "viam:mlmodel:onnx-cpu",
       "attributes": {
-        "model_path": "${packages.ml_model.microduck-walk}/policy.onnx"
+        "model_path": "${packages.ml_model.microduck-velocity}/policy.onnx"
       }
     },
     {
@@ -182,7 +188,7 @@
       "attributes": {
         "duck": "duck",
         "mlmodel": "walk-model",
-        "package_dir": "${packages.ml_model.microduck-walk}"
+        "package_dir": "${packages.ml_model.microduck-velocity}"
       }
     }
   ]
