@@ -19,7 +19,7 @@ This milestone is sim-to-sim only, like milestones 1–3. The real duck comes la
 | Authoring | Pose keyframes on the sim machine, interpolate, preview |
 | Hand-off to training | A Viam sequence dataset of the recorded playback (arm `JointPositions`) |
 | Runtime | A separate `dancer` duck-policy service. Only one service drives the duck at a time |
-| Training approach | Extend Pollen's phase-pose pattern (crouch, spin, sit-stand): a phase clock in the command slot, pose tracking, the same 61-value observation |
+| Training approach | Extend Pollen's phase-pose pattern (crouch, spin, ground-pick): a phase clock in the command slot, pose tracking, the same 61-value observation |
 
 Rejected:
 - **mjlab's BeyondMimic motion tracking:** it changes the observation and actions, and nobody has tuned it for the duck.
@@ -82,9 +82,9 @@ Rejected:
 | Subcommand | What it does |
 |---|---|
 | `pose <dance> --t <0..1>` | Reads the three arms' joint positions from the choreo machine and inserts or replaces the keyframe at `t`. Joints within 0.01 rad of STAND are left out. |
-| `preview <dance> [--cycles N]` | Plays the interpolated loop on the pinned duck at 50 Hz through the arms. |
+| `preview <dance> [--cycles N]` | Plays the interpolated loop on the pinned duck at 50 Hz through the arms. φ is computed from wall time since playback start, (t − t0) / `period_s`, never from a tick count, so late ticks don't drift the loop. |
 | `check <dance>` | Offline foot check, described below. Exits non-zero on failure. |
-| `record <dance> [--cycles 3]` | Runs `check` first. Then it previews N cycles with capture on, waits for sync, creates a sequence over the window (the three arms' `JointPositions`, tags `dance:<name>` and `period:<period_s>`), and adds it to the `microduck-dances` sequence dataset, creating the dataset if it's missing. |
+| `record <dance> [--cycles 3]` | Runs `check` first. Then it previews N cycles with capture on, waits for sync, creates a sequence whose window starts exactly at playback start (φ = 0) and lasts N × `period_s` (the three arms' `JointPositions`, tags `dance:<name>` and `period:<period_s>`), and adds it to the `microduck-dances` sequence dataset, creating the dataset if it's missing. |
 
 `interpolate(dance, phase) -> 14 joint angles` (policy order) lives in `duck_train/dance.py`, so the tool, the reference builder's tests and the evaluator share one implementation.
 
@@ -116,41 +116,43 @@ It fails if:
 2. From the tabular Parquet, take each sequence's `JointPositions` rows for the three arms, and convert degrees to radians (Viam arms report degrees).
 3. Order the joints by the arm joint order: left leg ×5, head ×4, right leg ×5, which is the policy order.
 4. Put the three arms on a common time base by linear interpolation at 50 Hz.
-5. Drop the first and last 0.25 s of each window. Find the start of a cycle as the sample closest to STAND, so phase 0 is STAND.
-6. Fold the samples into 100 phase bins by `period`, and take the mean of each bin over every cycle in every sequence.
+5. Each sample's phase is ((t − window_start) / period) mod 1. `record` starts the window at φ = 0 and paces playback by wall time, so no alignment search is needed.
+6. Fold the samples into 100 phase bins, and take the mean of each bin over every cycle in every sequence.
 7. Fail if any bin is empty, if the per-bin spread (the standard deviation across cycles) is over 0.05 rad, or if bin 0 differs from STAND by more than 0.05 rad.
 
 The table is used by the training task and written to the package as `reference.json`.
 
 ### Task `Mjlab-Dance-Flat-MicroDuck` (`duck_train/dance_task.py`)
 
-It's registered at job start and built from Pollen's legged sit-stand config (`microduck_sitstand_env_cfg`), changed as follows.
+It's registered at job start and built from `Mjlab-Velocity-Flat-MicroDuck`'s config (`microduck_velocity_env_cfg`, the flat variant milestone 3 trains), changed as follows. Everything not listed stays as the velocity task has it.
 
-- **Command `twist`:** `GroundPickPhaseCommandCfg(period=period_s, randomize_phase=True)`.
-  - **20 % of envs get a frozen phase:** φ = 0, command `[1, 0, 0]`. This is the stand-and-hold case.
-  - It's done with a small subclass, `DancePhaseCommand`, that chooses frozen envs at reset with `rel_frozen_envs = 0.2`.
-- **Command `head_pose`:** a constant zero, keeping the slot layout. The dance drives the head through the reference.
-- **Rewards** (all of the sit-stand posture and height terms removed):
+- **Command `twist`:** `DancePhaseCommandCfg`, a subclass of Pollen's `GroundPickPhaseCommandCfg(period=period_s, randomize_phase=True)`.
+  - `rel_frozen_envs = 0.2`: at each reset, after the random phase is applied, 20 % of envs are chosen to have φ frozen at 0 (command `[1, 0, 0]`), the stand-and-hold case.
+  - It overrides both `reset` (choose frozen envs) and `compute` (don't advance φ for frozen envs), since the parent advances the phase every step.
+- **Commands `head_pose` and `body_pose`:** constant zero, keeping the 13-value slot layout. The dance drives the head through the reference.
+- **Rewards removed:** `track_linear_velocity`, `track_angular_velocity`, `air_time`, `foot_clearance`, `foot_swing_height`, `pose`, `head_pose_tracking`, `head_pose_bias`, `body_pose_tracking`. (`head_pose_tracking` would pull the head to HOME against the dance.)
+- **Rewards after the change** (the complete list):
 
   | Term | Function | Weight (initial) |
   |---|---|---|
-  | `dance_pose` | Gaussian (std 0.3) on all 14 joints vs `table[φ]`, linearly interpolated between bins | 4.0 |
-  | `dance_pose_l1` | −mean abs error vs `table[φ]` | 1.0 |
-  | `upright` | Pollen's velocity-task upright term | velocity value |
-  | `foot_slip` | velocity-task term | velocity value |
-  | `feet_contact` | +1 when both feet are in contact | 0.5 |
-  | `action_rate_l2` | mjlab | −0.1 |
-  | `dof_pos_limits`, `self_collisions`, `body_ang_vel` | velocity-task terms | velocity values |
+  | `dance_pose` | new: Gaussian (std 0.3) on all 14 joints vs `table[φ]`, linearly interpolated between bins | 4.0 |
+  | `dance_pose_l1` | new: −mean abs error vs `table[φ]` | 1.0 |
+  | `feet_contact` | new: +1 when both feet are in contact | 0.5 |
+  | `upright` | velocity task | velocity value |
+  | `foot_slip` | velocity task. Its `command_threshold` gate is always open, since the phase command's norm is 1; intended, because the feet should never slip | velocity value |
+  | `action_rate_l2` | velocity task | −1.0 (the velocity curriculum's final value, fixed) |
+  | `dof_pos_limits`, `self_collisions`, `body_ang_vel`, `angular_momentum` | velocity task | velocity values |
 
-  `dance_pose` and `dance_pose_l1` are new functions in `duck_train/dance_task.py`. They take the phase from the command the same way `_phase_pose_error` does.
-- **Terminations:** `fell_over` is kept (sit-stand removes it, but falls aren't part of an in-place dance), plus `time_out` at 20 s and `nan_state`.
-- **Randomization:** the velocity task's domain randomization, the BAM actuator, encoder bias and pushes, as configured in `microduck_velocity_env_cfg`.
-- **Curriculum:** none at first. If the probe fails to learn, the first thing to add is a ramp from STAND to the full reference.
+  The new functions live in `duck_train/dance_task.py`. `dance_pose*` take φ from the command the same way `_phase_pose_error` does: `atan2(cmd[1], cmd[0]) / 2π mod 1`.
+- **Curricula removed:** `action_rate_weight`, `standing_envs`, `head_pose_range`, `body_pose_range`, `head_pose_bias_weight`. Kept: `com_range`, `head_com_range` (randomization ramps).
+- **Terminations:** unchanged (`fell_over`, `time_out`, `nan_state`). `episode_length_s` is 20.
+- **Randomization:** unchanged from the velocity task (BAM actuator, encoder bias, pushes, CoM and mass).
+- **No dance curriculum at first.** If the probe fails to learn, the first thing to add is a ramp from STAND to the full reference.
 
 ### Package `microduck-dance-<name>`
 
 - `policy.onnx`, checked with `verify_onnx`.
-- `config.json`: the existing schema, plus `"command": {"mode": "phase", "period_s": <s>}`, which replaces `twist_min` and `twist_max`. `safety.action_bound` comes from the training stats, as for velocity.
+- `config.json`: the existing schema, plus `"command": {"mode": "phase", "period_s": <s>}`, which replaces `twist_min` and `twist_max`. `build_config` writes `safety: {}` as for velocity. After the job, `duck_reference.py --stats --phase <period_s>` fills `safety` from headless rollouts, before the package is uploaded.
 - `reference.json`: `{"period_s", "joints", "table"}`.
 - `model_metrics.json`.
 
@@ -162,13 +164,16 @@ It's registered at job start and built from Pollen's legged sit-stand config (`m
 
 When `config.json` has `command.mode == "phase"`:
 
-- Each tick, φ = ((t − t_start) / period_s) mod 1, and the command is `[cos 2πφ, sin 2πφ, 0, …0]`, 13 values. While holding, φ is frozen at 0.
+- **Clock:** φ comes from the loop's scheduled slot time, (slot index since start) / `control_hz` / `period_s` mod 1. Skipped slots still advance φ, so it tracks real time like the sim does, matching training's dt per policy step. While holding, φ is frozen at 0.
+- The command is `[cos 2πφ, sin 2πφ, 0, …0]`, 13 values.
 - `start {"cycles": N}` (default 0, meaning forever) starts at φ = 0. After N full cycles it holds at φ = 0 and keeps running.
 - `set_command` returns an error in phase mode.
 - `status` adds `phase`, `cycles_done` and `holding`.
 - The safety limits and the stop reasons are unchanged.
 
-`Command` and `build_obs` stay as they are. The phase code makes the 13-value command vector itself.
+Code changes this implies:
+- `build_obs` takes the 13-value command as an array instead of a `Command`. Velocity mode passes `Command.vector()`.
+- `PolicyLoop.__init__` and `service.set_command` read `twist_min` / `twist_max` only in velocity mode. Today they read them unconditionally and would raise `KeyError` on a phase config.
 
 ### Preview machine
 
@@ -193,7 +198,7 @@ When `config.json` has `command.mode == "phase"`:
   | foot drift | < 3 cm per cycle (each foot, horizontal) |
   | trunk yaw drift | < 10° per episode |
   | tick rate / p99 / late ticks / walker ran | same thresholds as milestone 2 |
-  | hold | upright and walker running at the end of the 2 s hold |
+  | hold | upright and `dancer` still running at the end of the 2 s hold |
 
 - **Handover check:** one scripted run of walker (stand 2 s), then dancer (2 cycles), then walker (stand 2 s), with no fall.
 - **Results** go in `docs/superpowers/specs/<date>-microduck-dance-results.md`.
@@ -213,8 +218,8 @@ Unit tests (pytest, no GPU and no Viam):
 ## Build order
 
 1. **Choreographing and recording:** pinned duck in duck-sim 0.3.0, `duck_train/dance.py` `interpolate` plus the foot check, `duck_choreo.py`, the choreo machine, and a first dance recorded into `microduck-dances`.
-2. **Training:** `build_reference`, the task, `task=dance` in `microduck-train` (a new script version), the probe, then the full run.
-3. **Running and evaluating:** phase mode in duck-policy, the `dancer` service, reference and parity `--phase`, the handover check, and the results doc.
+2. **Training:** `build_reference`, the task, `task=dance` in `microduck-train` (a new script version), the probe, the full run, then `duck_reference.py --phase` with `--stats` to fill `safety`, and the package upload.
+3. **Running and evaluating:** phase mode in duck-policy, the `dancer` service, parity `--phase` (the reference runner's `--phase` already exists from part 2), the handover check, and the results doc.
 
 ## Out of scope
 
