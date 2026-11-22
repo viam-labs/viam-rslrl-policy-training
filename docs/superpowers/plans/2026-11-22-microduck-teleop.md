@@ -339,6 +339,14 @@ def test_policy_errors_dont_stop_the_loop():
     pol.do_command = boom
     asyncio.run(t.tick(0.0))  # must not raise
     asyncio.run(t.tick(0.05))
+
+
+def test_close_sends_zero():
+    t, ctl, pol = make()
+    ctl.events = held(ev(Control.ABSOLUTE_Y, ABS, -1.0))
+    asyncio.run(t.tick(0.0))
+    asyncio.run(t.close())
+    assert twists(pol)[-1] == (0.0, 0.0, 0.0)
 ```
 
 - [ ] **Step 2: Run the tests and check that they fail**
@@ -364,6 +372,7 @@ from viam.utils import struct_to_dict
 
 HZ = 20.0
 REFRESH_S = 0.5  # resend an unchanged twist this often while the controller is healthy
+CALL_TIMEOUT_S = 0.5  # a hung get_events takes the error path (zero twist)
 WARN_EVERY_S = 1.0
 
 
@@ -411,7 +420,8 @@ class Teleop(Generic, EasyResource):
 
     async def tick(self, now: float) -> None:
         try:
-            twist, actions = map_events(await self.controller.get_events(), self.state)
+            events = await asyncio.wait_for(self.controller.get_events(), CALL_TIMEOUT_S)
+            twist, actions = map_events(events, self.state)
         except Exception as e:
             self._warn(now, f"input controller: {e}")
             twist, actions = None, []
@@ -436,15 +446,21 @@ class Teleop(Generic, EasyResource):
         if getattr(self, "task", None) and not self.task.done():
             self.task.cancel()
             await asyncio.gather(self.task, return_exceptions=True)
+        if getattr(self, "policy", None) is not None:  # removed while LB held: don't leave the walker walking
+            await self._call({"command": "set_command", "vx": 0.0, "vy": 0.0, "wz": 0.0}, time.monotonic())
 ```
+
+Keep `from __future__ import annotations` as the first statement of the file when merging the imports.
 
 Notes:
 - **Zero once on errors:** while the controller is unhealthy, the twist is ZERO and refreshes are off.
   So zero goes out once, on the change, and a run of errors sends nothing more.
 - **Recovery:** when the controller comes back healthy and LB isn't held, ZERO equals `self.sent`,
   so nothing is sent until the refresh is due.
-- **`reconfigure` runs on the module's event loop:** the SDK calls it from inside the running loop,
-  so `get_running_loop()` works there. The tests call `_configure` directly and drive `tick`, so they
+- **Lifecycle:** on a config change this SDK doesn't call `reconfigure` in place. It awaits
+  `close()` on the old instance and calls `new()` again (which calls `reconfigure`). Both run on the
+  module's event loop, so `get_running_loop()` works. The new instance starts unprimed and sends a
+  zero twist on its first tick. The tests call `_configure` directly and drive `tick`, so they
   never start the background task.
 
 - [ ] **Step 4: Register the model**
@@ -468,7 +484,7 @@ from duck_policy.teleop import Teleop  # noqa: F401  (registers the model)
 - [ ] **Step 5: Run the tests**
 
 Run: `uv run pytest tests/test_duck_teleop.py -q && uv run pytest -q`
-Expected: 14 passed in the teleop file. The whole suite: 127 passed, 1 skipped (113 + 14).
+Expected: 15 passed in the teleop file. The whole suite: 128 passed, 1 skipped (113 + 15).
 
 Check that the module still imports: `uv run python -c "import duck_policy.main"` (no output, exit 0).
 
@@ -505,7 +521,8 @@ in `services`.
 
 - [ ] **Step 2: Restart the duck-policy module** so it registers the new model. It's a local module,
   and the running process predates `teleop.py`. Restart the background viam-server task (TaskStop,
-  then start it again with the same command and log path). Run `cell.py wait`, then check
+  then start it again with the same command and log path). Run `uv run /Users/nick.hehr/.claude/plugins/cache/viam-mujoco-sim/mujoco-sim/0.1.6/skills/mujoco-sim-cell/scripts/cell.py wait --cell <scratchpad>/microduck-preview/cell.json`
+  (the mujoco-sim-cell skill's tool), then check
   `read_machine_logs` for `teleop` errors.
 - [ ] **Step 3: Manual test with the user.** The user opens the machine's Control tab with a gamepad
   connected to the browser.
@@ -526,6 +543,6 @@ git commit -m "feat: preview machine gets WebGamepad + teleop; manual test notes
 
 ## Done when
 
-- `uv run pytest -q` shows 127 passed, 1 skipped.
+- `uv run pytest -q` shows 128 passed, 1 skipped.
 - The preview machine has `WebGamepad` and `teleop`, and they're ready.
 - The user has driven the duck with LB and the sticks, and the close-the-tab result is recorded.
