@@ -1,7 +1,8 @@
 """Viam generic service devrel:duck-policy:controller: runs the MicroDuck walk policy at 50 Hz against a
 duck that serves the io DoCommand (viam-labs:mujoco-sim's robot now; a hardware module later), with
 inference through an mlmodel service (viam:mlmodel:onnx-cpu). DoCommand: start, stop, status,
-set_command {vx, vy, wz}. See spec unit 4."""
+set_command {vx, vy, wz}. Optional attribute world (the mujoco-sim world): start then recovers a fallen duck
+by pause/reset/start/play. See spec unit 4."""
 
 from __future__ import annotations
 
@@ -23,6 +24,7 @@ from .io import SimIO
 from .loop import Limits, PolicyLoop
 from .obs import Command
 
+UPRIGHT_GRAVITY_Z = -0.9  # ~25 degrees of tilt
 LIMIT_KEYS = ("fall_gravity_z", "call_timeout_s", "ramp_s")
 
 
@@ -35,7 +37,7 @@ class DuckPolicy(Generic, EasyResource):
         for key in ("duck", "mlmodel", "package_dir"):
             if not attrs.get(key):
                 raise ValueError(f"attribute {key} is required")
-        return [attrs["duck"], attrs["mlmodel"]], []
+        return [attrs["duck"], attrs["mlmodel"], *([attrs["world"]] if attrs.get("world") else [])], []
 
     @classmethod
     def new(cls, config, dependencies):
@@ -47,13 +49,14 @@ class DuckPolicy(Generic, EasyResource):
         attrs = struct_to_dict(config.attributes)
         duck = dependencies[GenericComponent.get_resource_name(attrs["duck"])]
         mlmodel = dependencies[MLModel.get_resource_name(attrs["mlmodel"])]
-        self._configure(attrs, duck=duck, mlmodel=mlmodel)
+        world = dependencies[GenericComponent.get_resource_name(attrs["world"])] if attrs.get("world") else None
+        self._configure(attrs, duck=duck, mlmodel=mlmodel, world=world)
 
-    def _configure(self, attrs: dict, *, duck: Any, mlmodel: Any) -> None:
+    def _configure(self, attrs: dict, *, duck: Any, mlmodel: Any, world: Any = None) -> None:
         if getattr(self, "task", None) and not self.task.done():
             self.task.cancel()
         self.cfg = json.loads((Path(attrs["package_dir"]) / "config.json").read_text())
-        self.duck, self.mlmodel = duck, mlmodel
+        self.duck, self.mlmodel, self.world = duck, mlmodel, world
         self.limits = Limits(**{k: float(attrs[k]) for k in LIMIT_KEYS if k in attrs})
         self.input_name = self.cfg["model"]["input"]
         self.output_name = self.cfg["model"]["output"]
@@ -73,10 +76,19 @@ class DuckPolicy(Generic, EasyResource):
             case "start":
                 if self._state() == "running":
                     raise ValueError("already running")
-                self.loop = PolicyLoop(SimIO(self.duck, self.cfg["joints"]), self._infer, self.cfg, self.limits)
-                self.loop.set_command(self.command)
-                self.task = asyncio.create_task(self.loop.run())
-                return {"state": "running"}
+                io = SimIO(self.duck, self.cfg["joints"])
+                recover = self.world is not None and (await io.read()).gravity[2] > UPRIGHT_GRAVITY_Z
+                try:
+                    if recover:
+                        await self.world.do_command({"command": "pause"})
+                        await self.world.do_command({"command": "reset"})
+                    self.loop = PolicyLoop(io, self._infer, self.cfg, self.limits)
+                    self.loop.set_command(self.command)
+                    self.task = asyncio.create_task(self.loop.run())
+                finally:
+                    if recover:  # never leave the world paused
+                        await self.world.do_command({"command": "play"})
+                return {"state": "running", "recovered": recover}
             case "stop":
                 if self.task and not self.task.done():
                     self.task.cancel()

@@ -194,6 +194,7 @@
       "attributes": {
         "duck": "duck",
         "mlmodel": "walk-model",
+        "world": "sim-world",
         "package_dir": "${packages.ml_model.microduck-velocity}"
       }
     },

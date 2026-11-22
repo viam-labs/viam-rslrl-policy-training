@@ -61,6 +61,8 @@ Viam machine (cloud simulation, like rl-insert)
     50 Hz loop: io snapshot -> obs(61) -> Infer -> 14 targets -> next io
     DuckIO: SimIO (the robot's io DoCommand); BusIO later
     DoCommand: start, stop, status, set_command
+    optional attribute `world` (the mujoco-sim world): `start` on a fallen duck (gravity z > -0.9)
+    recovers it: world pause, reset, start the loop, play (the policy has torque before physics resumes)
 ```
 
 ## Units
