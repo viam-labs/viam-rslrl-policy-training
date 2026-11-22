@@ -62,7 +62,7 @@ class DuckPolicy(Generic, EasyResource):
         self.input_name = self.cfg["model"]["input"]
         self.output_name = self.cfg["model"]["output"]
         self.task, self.loop, self.command = None, None, Command()
-        self._start_lock = asyncio.Lock()
+        self._start_lock = getattr(self, "_start_lock", None) or asyncio.Lock()  # kept across reconfigures
 
     async def _infer(self, obs: np.ndarray) -> np.ndarray:
         out = await self.mlmodel.infer({self.input_name: obs[None].astype(np.float32)})
