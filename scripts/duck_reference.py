@@ -3,7 +3,7 @@ code (load_mujoco_with_bam, PolicyInference), its reset sequence and its 4 x 5 m
 driven by a command script instead of the keyboard and run as fast as it can.
 
     uv run --project <mujoco-sim worktree> --with onnxruntime python scripts/duck_reference.py \
-        <microduck_rl checkout> <duck-sim dir> <policy.onnx> <out.json> [--golden tests/data/duck_golden.json] [--stats <walk config.json>] [--script script.json]
+        <microduck_rl checkout> <duck-sim dir> <policy.onnx> <out.json> [--golden tests/data/duck_golden.json] [--stats <walk config.json>] [--script script.json] [--phase period_s [--cycles 3] [--hold 2.0]]
 
 The scene is the duck-sim package's duck.xml, so both sides of the parity check simulate the same file
 with the same MuJoCo build. Records, every 0.1 s of sim time: t, trunk position and quaternion, gravity.
@@ -16,10 +16,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # duck_train.robot is constants only: no heavy imports
+from duck_train.robot import TRUNK_Z  # noqa: E402
 
 # The command script: (seconds, vx, vy, wz). velstand has a dead zone (Pollen's docs/velstand_policy.md,
 # microduck_velstand_env_cfg.py:344-380): measured on infer_policy's own scene, vx 0.15-0.2, |vx| <= 0.3
@@ -29,7 +33,7 @@ SCRIPT = [(2.0, 0.0, 0.0, 0.0), (8.0, 0.4, 0.0, 0.0), (5.0, 0.4, 0.0, 0.6), (5.0
           (4.0, 0.0, 0.0, 0.0), (6.0, -0.4, 0.0, 0.0)]
 DEFAULT_SCRIPT = list(SCRIPT)
 DURATION = sum(seg[0] for seg in SCRIPT)
-TRUNK_Z = 0.125  # infer_policy.py:1376-1383
+PHASE = None  # {"period_s", "cycles", "hold_s"}: the dance policy clock, in the twist slot
 
 
 def opt_summary(model) -> dict:
@@ -46,7 +50,22 @@ def set_script(script) -> None:
     DURATION = sum(seg[0] for seg in SCRIPT)
 
 
+def set_phase(period_s, cycles: int = 3, hold_s: float = 2.0) -> None:
+    """Drive the phase clock (cos 2 pi phi, sin 2 pi phi, 0) for `cycles` periods, then hold (1, 0, 0); None clears it."""
+    global PHASE, DURATION
+    if period_s is None:
+        PHASE, DURATION = None, sum(seg[0] for seg in SCRIPT)
+        return
+    PHASE = {"period_s": float(period_s), "cycles": int(cycles), "hold_s": float(hold_s)}
+    DURATION = cycles * period_s + hold_s
+
+
 def command_at(t: float) -> tuple[float, float, float]:
+    if PHASE:
+        if t >= PHASE["cycles"] * PHASE["period_s"]:
+            return 1.0, 0.0, 0.0
+        phi = (t / PHASE["period_s"]) % 1
+        return math.cos(2 * math.pi * phi), math.sin(2 * math.pi * phi), 0.0
     for seconds, vx, vy, wz in SCRIPT:
         if t < seconds:
             return vx, vy, wz
@@ -109,16 +128,20 @@ def run(checkout: Path, duck_xml: Path, onnx: Path, golden: Path | None = None) 
         if tick % 5 == 0:  # every 0.1 s
             quat = data.qpos[qa + 3:qa + 7].copy()
             samples.append({"t": round(float(data.time), 4), "trunk_pos": data.qpos[qa:qa + 3].tolist(),
-                            "trunk_quat_wxyz": quat.tolist(), "gravity": policy.get_projected_gravity().tolist()})
+                            "trunk_quat_wxyz": quat.tolist(), "gravity": policy.get_projected_gravity().tolist(),
+                            "q": data.qpos[policy.joint_qpos_indices].tolist()})
     if golden is not None:
         golden.parent.mkdir(parents=True, exist_ok=True)
         golden.write_text(json.dumps({"default_pose": list(map(float, policy.default_pose)), "ticks": ticks}, indent=1))
-    return {
+    result = {
         "script": [list(seg) for seg in SCRIPT],
         "samples": samples,
         "action_p999": float(np.percentile(np.concatenate(actions), 99.9)),
         "step_p999": float(np.percentile(np.concatenate(steps), 99.9)),
     }
+    if PHASE:
+        result["phase"] = PHASE
+    return result
 
 
 def main() -> None:
@@ -130,9 +153,14 @@ def main() -> None:
     ap.add_argument("--golden", type=Path)
     ap.add_argument("--stats", type=Path, help="walk package config.json to write the safety block into")
     ap.add_argument("--script", type=Path, help="JSON list of [seconds, vx, vy, wz] replacing the default command script")
+    ap.add_argument("--phase", type=float, help="dance period in seconds: drive the phase clock instead of the script")
+    ap.add_argument("--cycles", type=int, default=3)
+    ap.add_argument("--hold", type=float, default=2.0, help="seconds held at phase 0 after the last cycle")
     args = ap.parse_args()
     if args.script:
         set_script(json.loads(args.script.read_text()))
+    if args.phase:  # after set_script, which would reset DURATION to the script's length
+        set_phase(args.phase, args.cycles, args.hold)
     result = run(args.checkout.resolve(), (args.duck_sim / "duck.xml").resolve(), args.onnx.resolve(), args.golden)
     args.out.write_text(json.dumps(result))
     if args.stats:

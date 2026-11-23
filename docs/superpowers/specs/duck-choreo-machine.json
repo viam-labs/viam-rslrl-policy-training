@@ -1,0 +1,199 @@
+{
+  "modules": [
+    {
+      "type": "registry",
+      "name": "viam-labs_mujoco-sim",
+      "module_id": "viam-labs:mujoco-sim",
+      "version": "0.21.0"
+    }
+  ],
+  "packages": [
+    {
+      "name": "duck-sim",
+      "package": "16518049-9dd3-479f-9644-c5d112aa42d8/duck-sim",
+      "type": "archive",
+      "version": "0.3.1"
+    }
+  ],
+  "components": [
+    {
+      "name": "sim-world",
+      "api": "rdk:component:generic",
+      "model": "viam-labs:mujoco-sim:world",
+      "attributes": {
+        "physics_dt": 0.005
+      }
+    },
+    {
+      "name": "duck",
+      "api": "rdk:component:generic",
+      "model": "viam-labs:mujoco-sim:robot",
+      "attributes": {
+        "world": "sim-world",
+        "mjcf": "${packages.archive.duck-sim}/duck_pinned.xml"
+      },
+      "frame": {
+        "parent": "world",
+        "translation": {
+          "x": 0,
+          "y": 0,
+          "z": 0
+        }
+      }
+    },
+    {
+      "name": "left-leg",
+      "api": "rdk:component:arm",
+      "model": "viam-labs:mujoco-sim:arm",
+      "attributes": {
+        "world": "sim-world",
+        "robot": "duck",
+        "joints": [
+          "left_hip_yaw",
+          "left_hip_roll",
+          "left_hip_pitch",
+          "left_knee",
+          "left_ankle"
+        ],
+        "flange_site": "left_foot",
+        "home_keyframe": "STAND"
+      },
+      "frame": {
+        "parent": "duck",
+        "translation": {
+          "x": 0,
+          "y": 0,
+          "z": 120
+        }
+      },
+      "service_configs": [
+        {
+          "type": "data_manager",
+          "attributes": {
+            "capture_methods": [
+              {
+                "method": "JointPositions",
+                "capture_frequency_hz": 50,
+                "additional_params": {}
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "head",
+      "api": "rdk:component:arm",
+      "model": "viam-labs:mujoco-sim:arm",
+      "attributes": {
+        "world": "sim-world",
+        "robot": "duck",
+        "joints": [
+          "neck_pitch",
+          "head_pitch",
+          "head_yaw",
+          "head_roll"
+        ],
+        "flange_site": "head_camera",
+        "home_keyframe": "STAND"
+      },
+      "frame": {
+        "parent": "duck",
+        "translation": {
+          "x": 0,
+          "y": 0,
+          "z": 120
+        }
+      },
+      "service_configs": [
+        {
+          "type": "data_manager",
+          "attributes": {
+            "capture_methods": [
+              {
+                "method": "JointPositions",
+                "capture_frequency_hz": 50,
+                "additional_params": {}
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "right-leg",
+      "api": "rdk:component:arm",
+      "model": "viam-labs:mujoco-sim:arm",
+      "attributes": {
+        "world": "sim-world",
+        "robot": "duck",
+        "joints": [
+          "right_hip_yaw",
+          "right_hip_roll",
+          "right_hip_pitch",
+          "right_knee",
+          "right_ankle"
+        ],
+        "flange_site": "right_foot",
+        "home_keyframe": "STAND"
+      },
+      "frame": {
+        "parent": "duck",
+        "translation": {
+          "x": 0,
+          "y": 0,
+          "z": 120
+        }
+      },
+      "service_configs": [
+        {
+          "type": "data_manager",
+          "attributes": {
+            "capture_methods": [
+              {
+                "method": "JointPositions",
+                "capture_frequency_hz": 50,
+                "additional_params": {}
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "overview",
+      "api": "rdk:component:camera",
+      "model": "viam-labs:mujoco-sim:camera",
+      "attributes": {
+        "world": "sim-world",
+        "width": 1280,
+        "height": 720,
+        "position": [
+          0.45,
+          0.35,
+          0.3
+        ],
+        "target": [
+          0,
+          0,
+          0.08
+        ]
+      }
+    }
+  ],
+  "services": [
+    {
+      "name": "data_manager",
+      "api": "rdk:service:data_manager",
+      "model": "rdk:builtin:builtin",
+      "attributes": {
+        "sync_interval_mins": 0.05,
+        "capture_disabled": false,
+        "sync_disabled": false,
+        "tags": [
+          "microduck-choreo"
+        ]
+      }
+    }
+  ]
+}

@@ -28,16 +28,12 @@ from pathlib import Path
 
 from model.harness import VideoUploader, check, device, select_gl, set_visible_devices, unquote
 
+from .robot import DEFAULT_POSE, JOINTS
 from .package import build_config, scalar_metrics, verify_onnx, write_json
 
 logger = logging.getLogger("microduck-train")
 TASK = "Mjlab-Velocity-Flat-MicroDuck"
 TAGS = ["microduck"]
-JOINTS = ["left_hip_yaw", "left_hip_roll", "left_hip_pitch", "left_knee", "left_ankle",
-          "neck_pitch", "head_pitch", "head_yaw", "head_roll",
-          "right_hip_yaw", "right_hip_roll", "right_hip_pitch", "right_knee", "right_ankle"]
-DEFAULT_POSE = [0.0, -0.0873, -0.4579, -0.0049, 0.4530, 0.3491, 0.3491, 0.0, 0.0,
-                0.0, 0.0873, 0.4579, 0.0049, -0.4530]  # infer_policy.py:126-141
 UPLOAD_JOIN_TIMEOUT = 60.0
 
 
@@ -45,9 +41,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="model.training", allow_abbrev=False)
     p.add_argument("--model_output_directory", type=lambda s: Path(unquote(s)), required=True)
     for name in ("dataset_file", "binary_data_file", "tabular_data_file", "sequences_file"):
-        p.add_argument(f"--{name}", type=unquote, default=None, help="ignored (placeholder dataset)")
+        p.add_argument(f"--{name}", type=unquote, default=None,
+                       help="ignored (placeholder dataset)" if name == "dataset_file" else "sequence dataset (dance)")
     p.add_argument("--mode", type=unquote, choices=("train", "probe"), default="train")
-    p.add_argument("--max_iterations", type=lambda s: int(unquote(s)), default=4000)
+    p.add_argument("--task", type=unquote, choices=("velocity", "dance"), default="velocity")
+    p.add_argument("--dance", type=unquote, default=None, help="dance name in the sequence dataset (task=dance)")
+    p.add_argument("--max_iterations", type=lambda s: int(unquote(s)), default=None, help="default 4000 (velocity), 2000 (dance)")
     p.add_argument("--num_envs", type=lambda s: int(unquote(s)), default=4096)
     p.add_argument("--seed", type=lambda s: int(unquote(s)), default=42)
     p.add_argument("--save_interval", type=lambda s: int(unquote(s)), default=250)
@@ -56,16 +55,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--run_name", type=unquote, default=time.strftime("microduck-%Y%m%d-%H%M%S"))
     p.add_argument("--upload_part_id", type=unquote, default=None)
     p.add_argument("--upload_dataset_id", type=unquote, default=None)
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if args.task == "dance" and not (args.dance and args.tabular_data_file and args.sequences_file):
+        p.error("--task=dance needs --dance, --tabular_data_file and --sequences_file")
+    if args.max_iterations is None:
+        args.max_iterations = 2000 if args.task == "dance" else 4000
+    return args
 
 
-def _cfgs(args):
+def _cfgs(args, task):
     import mjlab.tasks  # noqa: F401  (loads the mjlab.tasks entry points: registers microduck's tasks)
     from mjlab.tasks.registry import load_env_cfg, load_rl_cfg  # verified in mjlab 1.3.0 (return deep copies)
 
-    env_cfg = load_env_cfg(TASK)
+    env_cfg = load_env_cfg(task)
     env_cfg.scene.num_envs = args.num_envs
-    agent = load_rl_cfg(TASK)
+    agent = load_rl_cfg(task)
     agent.max_iterations = args.max_iterations
     agent.save_interval = args.save_interval
     agent.seed = args.seed
@@ -82,18 +86,18 @@ def _last_checkpoint(log_dir: Path) -> Path:
     return ckpts[-1]
 
 
-def export_and_verify(ckpt: Path, onnx_out: Path) -> dict:
+def export_and_verify(task: str, ckpt: Path, onnx_out: Path) -> dict:
     from mjlab_microduck.export import ExportConfig, run_export  # verified at MD/.../export.py:90
 
-    run_export(TASK, ExportConfig(checkpoint_file=str(ckpt), num_envs=1, onnx_file=str(onnx_out)))
+    run_export(task, ExportConfig(checkpoint_file=str(ckpt), num_envs=1, onnx_file=str(onnx_out)))
     return verify_onnx(onnx_out, JOINTS)
 
 
-def write_package(out: Path, log_dir: Path, env_cfg, agent) -> None:
+def write_package(out: Path, log_dir: Path, env_cfg, agent, task: str, command: dict, extra: dict, source_extra: dict) -> None:
     import mujoco
 
     ckpt = _last_checkpoint(log_dir)
-    meta = export_and_verify(ckpt, out / "policy.onnx")
+    meta = export_and_verify(task, ckpt, out / "policy.onnx")
     # The ONNX metadata rounds the pose to 3 decimals; config.json carries DEFAULT_POSE at full precision.
     meta_pose = [float(v) for v in meta["default_joint_pos"].split(",")]
     if any(abs(a - b) > 6e-4 for a, b in zip(meta_pose, DEFAULT_POSE)):
@@ -102,16 +106,16 @@ def write_package(out: Path, log_dir: Path, env_cfg, agent) -> None:
     xml = Path(__import__("mjlab_microduck").__file__).parent / "robot" / "microduck" / "robot_walk.xml"
     model = mujoco.MjModel.from_xml_path(str(xml))
     limits = [list(model.joint(n).range) for n in JOINTS]
-    twist = env_cfg.commands["twist"].ranges
     config = build_config(
         joints=JOINTS, default_pose=DEFAULT_POSE, action_scale=float(meta["action_scale"]), joint_limits=limits,
-        twist_min=[twist.lin_vel_x[0], twist.lin_vel_y[0], twist.ang_vel_z[0]],
-        twist_max=[twist.lin_vel_x[1], twist.lin_vel_y[1], twist.ang_vel_z[1]],
+        command=command,
         control_hz=round(1 / (env_cfg.sim.mujoco.timestep * env_cfg.decimation)),
-        source={"task": TASK, "microduck_rl": "0daab160d3fb1c2cbaba16a4a19052f36709dd9e", "checkpoint": ckpt.name,
+        source={"task": task, **source_extra, "microduck_rl": "0daab160d3fb1c2cbaba16a4a19052f36709dd9e", "checkpoint": ckpt.name,
                 "iterations": agent.max_iterations, "num_envs": env_cfg.scene.num_envs, "seed": agent.seed},
     )
     write_json(out / "config.json", config)
+    for name, obj in extra.items():
+        write_json(out / name, obj)
     shutil.copy(ckpt, out / "checkpoint.pt")
     write_json(out / "model_metrics.json", scalar_metrics(log_dir))
     logger.info("wrote %s from %s", sorted(p.name for p in out.iterdir()), ckpt.name)
@@ -122,27 +126,44 @@ def train(args, gl: dict) -> None:
 
     out = args.model_output_directory
     log_dir = Path(tempfile.mkdtemp(prefix="microduck-")) / "logs" / args.run_name
-    env_cfg, agent = _cfgs(args)
+    if args.task == "dance":
+        from .dance import build_reference
+        from .dance_task import register_dance_task  # image-only (needs mjlab)
+
+        period, table = build_reference(args.binary_data_file, args.tabular_data_file, args.sequences_file, args.dance)
+        task = register_dance_task(table, period)
+        command = {"mode": "phase", "period_s": period}
+        extra = {"reference.json": {"period_s": period, "joints": JOINTS, "table": table.round(5).tolist()}}
+        source_extra = {"dance": args.dance}
+        logger.info("dance %s: period %.2fs, reference table %s", args.dance, period, table.shape)
+    else:
+        task, extra, source_extra = TASK, {}, {}
+    env_cfg, agent = _cfgs(args, task)  # after registration: load_env_cfg needs the task registered
+    if args.task == "velocity":
+        twist = env_cfg.commands["twist"].ranges
+        command = {"twist_min": [twist.lin_vel_x[0], twist.lin_vel_y[0], twist.ang_vel_z[0]],
+                   "twist_max": [twist.lin_vel_x[1], twist.lin_vel_y[1], twist.ang_vel_z[1]]}
+    tags = [*TAGS, args.task]
     video = gl["backend"] is not None and args.video_every_iters > 0
     cfg = TrainConfig(env=env_cfg, agent=agent, video=video, video_length=args.video_length,
                       video_interval=max(1, args.video_every_iters) * agent.num_steps_per_env,
                       gpu_ids=None)  # mjlab 1.3.0's TrainConfig has no log_root: run_train writes into log_dir
     set_visible_devices(device().startswith("cuda"))
-    uploader = VideoUploader(log_dir / "videos" / "train", agent.num_steps_per_env, tags=TAGS, run_name=args.run_name,
+    uploader = VideoUploader(log_dir / "videos" / "train", agent.num_steps_per_env, tags=tags, run_name=args.run_name,
                              upload_part_id=args.upload_part_id, upload_dataset_id=args.upload_dataset_id)
     if video:
         uploader.folder.mkdir(parents=True, exist_ok=True)
         uploader.start()
     try:
         try:
-            run_train(TASK, cfg, log_dir)
+            run_train(task, cfg, log_dir)
         except BaseException:
             try:
-                write_package(out, log_dir, env_cfg, agent)
+                write_package(out, log_dir, env_cfg, agent, task, command, extra, source_extra)
             except Exception:
                 logger.error("no package after failed run:\n%s", traceback.format_exc())
             raise
-        write_package(out, log_dir, env_cfg, agent)
+        write_package(out, log_dir, env_cfg, agent, task, command, extra, source_extra)
     finally:
         uploader.stop.set()
         if video:
@@ -178,7 +199,7 @@ def probe(args, gl: dict) -> None:
         from mjlab.scripts.train import TrainConfig, run_train
 
         args.max_iterations, args.save_interval = 20, 10  # probe: a short run, a checkpoint every 10
-        env_cfg, agent = _cfgs(args)
+        env_cfg, agent = _cfgs(args, TASK)
         set_visible_devices(device().startswith("cuda"))
         video = gl["backend"] is not None
         t0 = time.monotonic()
@@ -189,7 +210,7 @@ def probe(args, gl: dict) -> None:
                 "metrics": scalar_metrics(log_dir)}
 
     check(results, "short_train", short_train, out)
-    check(results, "export", lambda: {"meta": export_and_verify(_last_checkpoint(log_dir), out / "probe_policy.onnx")}, out)
+    check(results, "export", lambda: {"meta": export_and_verify(TASK, _last_checkpoint(log_dir), out / "probe_policy.onnx")}, out)
 
     def upload() -> dict:
         vids = sorted((log_dir / "videos" / "train").glob("*.mp4"))

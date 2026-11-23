@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 
 
-def build_config(*, joints, default_pose, action_scale, joint_limits, twist_min, twist_max, control_hz, source) -> dict:
+def build_config(*, joints, default_pose, action_scale, joint_limits, command, control_hz, source) -> dict:
     return {
         "schema": 1,
         "source": source,
@@ -19,7 +19,7 @@ def build_config(*, joints, default_pose, action_scale, joint_limits, twist_min,
         "action_scale": float(action_scale),
         "joint_limits": [[float(lo), float(hi)] for lo, hi in joint_limits],
         "control_hz": int(control_hz),
-        "command": {"twist_min": [float(v) for v in twist_min], "twist_max": [float(v) for v in twist_max]},
+        "command": {k: (list(map(float, v)) if isinstance(v, (list, tuple)) else v) for k, v in command.items()},
         "safety": {},
         "observation": "gyro(3) gravity(3) q-default_pose(14) dq(14) last_action(14) command(13): microduck_rl@0daab16 infer_policy.py:656-682",
     }

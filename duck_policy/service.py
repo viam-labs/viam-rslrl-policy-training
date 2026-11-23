@@ -1,9 +1,11 @@
 """Viam generic service devrel:duck-policy:controller: runs the MicroDuck walk policy at 50 Hz against a
 duck that serves the io DoCommand (viam-labs:mujoco-sim's robot now; a hardware module later), with
 inference through an mlmodel service (viam:mlmodel:onnx-cpu). DoCommand: start, stop, status,
-set_command {vx, vy, wz}. Optional attribute world (the mujoco-sim world): start then recovers a fallen duck
-by pause/reset/torque-on/start/play (this unpauses a paused world). In sim every start whose pose is off
-STAND resets the whole world (the duck returns to its spawn point): there is no stop-then-resume-from-here. See spec unit 4."""
+set_command {vx, vy, wz} (velocity packages only). A package whose command mode is "phase" is a dance:
+start {cycles: N} runs N phase cycles, then holds STAND. Optional attribute world (the mujoco-sim world): start then recovers a fallen duck
+by pause/reset/torque-on/start/play (this unpauses a paused world). In sim a start whose pose is more than
+RAMP_THRESHOLD (0.15 rad) off STAND also resets the world (the duck returns to its spawn point); nearer, the
+new policy takes over from where the duck stands, so a walker/dancer handover needs no reset. See spec unit 4."""
 
 from __future__ import annotations
 
@@ -73,7 +75,7 @@ class DuckPolicy(Generic, EasyResource):
             return "idle"
         return "running" if not self.task.done() else "stopped"
 
-    async def _start(self) -> dict:
+    async def _start(self, cycles: int = 0) -> dict:
         if self._state() == "running":
             raise ValueError("already running")
         io = SimIO(self.duck, self.cfg["joints"])
@@ -89,8 +91,9 @@ class DuckPolicy(Generic, EasyResource):
                 await self.world.do_command({"command": "pause"})
                 await self.world.do_command({"command": "reset"})
                 await asyncio.wait_for(io.torque(True), self.limits.call_timeout_s * 10)  # stiff before physics resumes
-            self.loop = PolicyLoop(io, self._infer, self.cfg, self.limits)
-            self.loop.set_command(self.command)
+            self.loop = PolicyLoop(io, self._infer, self.cfg, self.limits, cycles=cycles)
+            if self.cfg["command"].get("mode") != "phase":
+                self.loop.set_command(self.command)
             self.task = asyncio.create_task(self.loop.run())
         finally:
             if recover:  # never leave the world paused
@@ -100,14 +103,19 @@ class DuckPolicy(Generic, EasyResource):
     async def do_command(self, command, *, timeout=None, **kwargs):
         match command.get("command"):
             case "start":
+                cycles = int(command.get("cycles", 0))
+                if cycles < 0:
+                    raise ValueError("cycles must be >= 0 (0 = dance until stopped)")
                 async with self._start_lock:
-                    return await self._start()
+                    return await self._start(cycles)
             case "stop":
                 if self.task and not self.task.done():
                     self.task.cancel()
                     await asyncio.gather(self.task, return_exceptions=True)
                 return {"state": self._state(), "reason": self.loop.reason if self.loop else None}
             case "set_command":
+                if self.cfg["command"].get("mode") == "phase":
+                    raise ValueError("set_command isn't available in phase mode")
                 c = Command(float(command.get("vx", 0)), float(command.get("vy", 0)), float(command.get("wz", 0)))
                 clipped = c.clipped(self.cfg["command"]["twist_min"], self.cfg["command"]["twist_max"])
                 self.command = clipped

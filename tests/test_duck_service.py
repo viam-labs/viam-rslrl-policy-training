@@ -67,11 +67,11 @@ class StubWorld:
         return {}
 
 
-def make_walker(tmp_path, gz, world=True, fail_on=None, q0=0.0):
+def make_walker(tmp_path, gz, world=True, fail_on=None, q0=0.0, command=None):
     (tmp_path / "config.json").write_text(json.dumps({
         "joints": ["j"] * 14, "default_pose": [0.0] * 14, "action_scale": 1.0, "joint_limits": [[-1, 1]] * 14,
         "control_hz": 50, "model": {"input": "obs", "output": "actions"},
-        "command": {"twist_min": [-0.4, -0.3, -1.0], "twist_max": [0.4, 0.3, 1.0]}, "safety": {}}))
+        "command": command or {"twist_min": [-0.4, -0.3, -1.0], "twist_max": [0.4, 0.3, 1.0]}, "safety": {}}))
     svc = DuckPolicy("walker")
     w = StubWorld(svc, fail_on) if world else None
     svc._configure({"duck": "duck", "mlmodel": "walk", "package_dir": str(tmp_path)},
@@ -138,3 +138,32 @@ def test_start_recovers_when_pose_far_from_default(tmp_path):
     svc, world = make_walker(tmp_path, gz=-1.0, q0=0.3)
     out = asyncio.run(start_and_stop(svc))
     assert world.cmds == ["pause", "reset", "play"] and out["recovered"] == "off_pose"
+
+
+def test_start_slightly_off_pose_hands_straight_to_policy(tmp_path):
+    # the walker stands 0.063 rad off default (neck_pitch): a handover must not reset the world
+    svc, world = make_walker(tmp_path, gz=-1.0, q0=0.1)
+    out = asyncio.run(start_and_stop(svc))
+    assert world.cmds == [] and out["recovered"] is False
+
+
+def test_phase_service_starts_with_cycles_and_rejects_set_command(tmp_path):
+    svc, _ = make_walker(tmp_path, gz=-1.0, world=False, command={"mode": "phase", "period_s": 0.1})
+
+    async def go():
+        try:
+            out = await svc.do_command({"command": "start", "cycles": 2})
+            assert svc.loop.cycles == 2
+            return out
+        finally:
+            await svc.do_command({"command": "stop"})
+
+    assert asyncio.run(go())["state"] == "running"
+    with pytest.raises(ValueError):
+        asyncio.run(svc.do_command({"command": "set_command", "vx": 0.1}))
+
+
+def test_start_rejects_negative_cycles(tmp_path):
+    svc, _ = make_walker(tmp_path, gz=-1.0, world=False, command={"mode": "phase", "period_s": 0.1})
+    with pytest.raises(ValueError, match="cycles"):
+        asyncio.run(svc.do_command({"command": "start", "cycles": -1}))

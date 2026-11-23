@@ -1,4 +1,7 @@
 import math
+
+import numpy as np
+import pytest
 import sys
 from pathlib import Path
 
@@ -95,3 +98,56 @@ def test_set_script_and_report_restores(tmp_path):
         assert ref.SCRIPT == [(5.0, 0.4, 0.0, 0.0)] and ref.DURATION == 5.0
     finally:
         ref.set_script(default)
+
+
+def test_phase_schedule():
+    try:
+        ref.set_phase(6.0, cycles=3, hold_s=2.0)
+        assert ref.DURATION == 20.0
+        assert ref.command_at(0.0) == pytest.approx((1.0, 0.0, 0.0))
+        assert ref.command_at(1.5) == pytest.approx((0.0, 1.0, 0.0), abs=1e-9)  # phase 0.25
+        assert ref.command_at(18.5) == (1.0, 0.0, 0.0)  # holding after 3 cycles
+    finally:
+        ref.set_phase(None)
+        ref.set_script(ref.DEFAULT_SCRIPT)
+
+
+DEFAULT = [0, -0.0873, -0.4579, -0.0049, 0.4530, 0.3491, 0.3491, 0, 0, 0, 0.0873, 0.4579, 0.0049, -0.4530]
+DUCK_XML = Path("dist/duck-sim/duck.xml")
+
+
+@pytest.mark.skipif(not DUCK_XML.exists(), reason="run scripts/export_duck_scene.py first")
+def test_dance_metrics_perfect_and_drifting():
+    import duck_parity as par
+    table = np.tile(np.array(DEFAULT)[None], (100, 1))
+    samples = [{"t": round(0.1 * i, 4), "q": list(DEFAULT), "trunk_pos": [0, 0, 0.125],
+                "trunk_quat_wxyz": [1, 0, 0, 0], "gravity": [0, 0, -1]} for i in range(200)]
+    ref.set_phase(6.0, cycles=3, hold_s=2.0)
+    try:
+        m = par.dance_metrics(samples, table, DUCK_XML)
+        assert m["joint_rmse"] == pytest.approx(0.0, abs=1e-9) and m["yaw_drift_deg"] == pytest.approx(0.0)
+        assert m["foot_drift_m"] < 1e-6 and m["hold_upright"]
+        moved = [{**s, "trunk_pos": [0.02 * s["t"], 0, 0.125]} for s in samples]  # 12 cm per 6 s cycle
+        assert par.dance_metrics(moved, table, DUCK_XML)["foot_drift_m"] > 0.03
+    finally:
+        ref.set_phase(None)
+
+
+def test_dance_report_requires_holding(tmp_path):
+    import json
+    ph = {"period_s": 6.0, "cycles": 3, "hold_s": 2.0}
+    s = [{"t": round(0.1 * i, 4), "q": DEFAULT, "trunk_pos": [0, 0, 0.125], "trunk_quat_wxyz": [1, 0, 0, 0],
+          "gravity": [0, 0, -1]} for i in range(200)]
+    w = {"ticks": 1000, "late": 0, "tick_ms_p99": 1, "run_s": 20, "state": "running", "holding": True}
+    (tmp_path / "t.json").write_text(json.dumps({"table": [DEFAULT] * 100}))
+    (tmp_path / "r.json").write_text(json.dumps({"samples": s, "phase": ph}))
+    try:
+        for holding, want in ((True, "| hold | pass |"), (False, "| hold (failed: [0]) | FAIL |")):
+            eps = [{"episode": i, "samples": s, "slips": 0, "phase": ph, "io_end_s": 20.0,
+                    "walker": {**w, "holding": holding if i == 0 else True}} for i in range(20)]
+            (tmp_path / "o.json").write_text(json.dumps(eps))
+            par = __import__("duck_parity")
+            par.report(tmp_path / "r.json", tmp_path / "o.json", tmp_path / "m.md", tmp_path / "t.json")
+            assert want in (tmp_path / "m.md").read_text()
+    finally:
+        ref.set_phase(None)

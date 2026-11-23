@@ -40,8 +40,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN git clone https://github.com/pollen-robotics/microduck_rl.git /opt/microduck_rl \
     && git -C /opt/microduck_rl checkout "${MICRODUCK_RL_SHA}" \
     && cd /opt/microduck_rl && uv sync --frozen --no-editable --python /usr/bin/python3 \
-    && uv pip install --python /opt/venv/bin/python "viam-sdk>=0.85" tensorboard "setuptools>=70" wheel pip \
-    && /opt/venv/bin/python -c "import torch, mjlab, mujoco_warp, onnxruntime, viam, bam, tensorboard, mjlab_microduck; print('torch', torch.__version__, torch.version.cuda)"
+    && uv pip install --python /opt/venv/bin/python "viam-sdk>=0.85" pandas pyarrow tensorboard "setuptools>=70" wheel pip \
+    && /opt/venv/bin/python -c "import torch, mjlab, mujoco_warp, onnxruntime, viam, bam, tensorboard, pandas, pyarrow, mjlab_microduck; print('torch', torch.__version__, torch.version.cuda)"
 
 # As in Dockerfile.train: build the script sdist with the venv's setuptools (no PyPI fetch on billed time).
 ENV PIP_NO_BUILD_ISOLATION=0

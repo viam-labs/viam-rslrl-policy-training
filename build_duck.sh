@@ -14,7 +14,7 @@ from duck_train.train import main
 if __name__ == "__main__":
     main()
 PY
-cp duck_train/__init__.py duck_train/train.py duck_train/package.py "$stage/duck_train/"
+cp duck_train/__init__.py duck_train/train.py duck_train/package.py duck_train/robot.py duck_train/dance.py duck_train/dance_rewards.py duck_train/dance_task.py "$stage/duck_train/"
 cp duck_train/setup.py "$stage/setup.py"
 (cd "$stage" && COPYFILE_DISABLE=1 uvx --from build pyproject-build --sdist --outdir "$root/dist" . >/dev/null)
 mv dist/microduck_train-*.tar.gz dist/microduck-train.tar.gz

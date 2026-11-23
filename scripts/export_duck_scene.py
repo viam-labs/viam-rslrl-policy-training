@@ -10,8 +10,9 @@ infer_policy.py loads it, and it has trunk and head collision.
 
 Writes out_dir/ with robot_groundcontact.xml, its assets/ meshes, LICENSE-MODELS.md and duck.xml: a
 wrapper that includes it and adds the STAND keyframe from scene.xml as its first keyframe,
-the robot's home (mujoco-sim homes a robot file from its first keyframe). Then out_dir.tar.gz,
-for `viam packages upload`.
+the robot's home (mujoco-sim homes a robot file from its first keyframe). Also duck_pinned.xml
+(with robot_pinned.xml), the posing duck: no free joint, position actuators, trunk fixed at STAND
+height. Then out_dir.tar.gz, for `viam packages upload`.
 """
 
 from __future__ import annotations
@@ -37,6 +38,42 @@ def stand_keyframe(scene_xml: str) -> str:
     return match.group(0)
 
 
+def pinned_keyframe(key: str) -> str:
+    """The STAND <key> with the free joint's 7 qpos values dropped (14 joint values remain)."""
+    def drop(m: re.Match) -> str:
+        return 'qpos="' + " ".join(m.group(1).split()[7:]) + '"'
+    return re.sub(r'qpos="([^"]*)"', drop, key, count=1)
+
+
+# Posing duck only (the walk model keeps kp 0.55): stiff enough that gravity sag is < 1 mrad. kv 0.4 plus the joint
+# damping is about critically damped at kp 40 under mujoco-sim's implicitfast integrator (kv >= 1 would go unstable
+# under MuJoCo's default Euler at dt 0.005).
+PINNED_KP, PINNED_KV, PINNED_FORCE = 40.0, 0.4, 4.0
+
+
+def write_pinned(out: Path, key: str) -> None:
+    """robot_pinned.xml: robot_groundcontact.xml minus the free joint, trunk fixed at STAND's pose."""
+    import mujoco
+
+    spec = mujoco.MjSpec.from_file(str(out / "robot_groundcontact.xml"))
+    joint = next((j for j in spec.joints if j.type == mujoco.mjtJoint.mjJNT_FREE), None)
+    if joint is None:
+        raise SystemExit("robot_groundcontact.xml has no free joint; is the checkout at the pinned commit?")
+    root = joint.parent  # the trunk body
+    spec.delete(joint)
+    vals = [float(v) for v in re.search(r'qpos="([^"]*)"', key).group(1).split()[:7]]
+    root.pos, root.quat = vals[:3], vals[3:]
+    for a in spec.actuators:
+        a.gainprm[0], a.biasprm[1], a.biasprm[2] = PINNED_KP, -PINNED_KP, -PINNED_KV
+        a.forcerange = [-PINNED_FORCE, PINNED_FORCE]
+    # MuJoCo 4 syntax (position actuators become <general ...>); mujoco-sim (mujoco>=4,<5) loads it.
+    (out / "robot_pinned.xml").write_text(spec.to_xml())
+    (out / "duck_pinned.xml").write_text(
+        '<mujoco model="microduck_pinned">\n  <include file="robot_pinned.xml"/>\n'
+        f"  <keyframe>\n    {pinned_keyframe(key)}\n  </keyframe>\n</mujoco>\n"
+    )
+
+
 def main(checkout: Path, out: Path) -> None:
     head = subprocess.run(["git", "-C", str(checkout), "rev-parse", "HEAD"], capture_output=True,
                           text=True, check=True).stdout.strip()
@@ -54,6 +91,7 @@ def main(checkout: Path, out: Path) -> None:
         '<mujoco model="microduck">\n  <include file="robot_groundcontact.xml"/>\n'
         f"  <keyframe>\n    {key}\n  </keyframe>\n</mujoco>\n"
     )
+    write_pinned(out, key)
     archive = out.with_suffix(".tar.gz")
     with tarfile.open(archive, "w:gz") as tar:
         for path in sorted(out.rglob("*")):

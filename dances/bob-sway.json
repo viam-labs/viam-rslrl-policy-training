@@ -1,0 +1,78 @@
+{
+  "name": "bob-sway",
+  "period_s": 6.0,
+  "keyframes": [
+    {
+      "t": 0.0,
+      "pose": {}
+    },
+    {
+      "t": 0.125,
+      "pose": {
+        "left_hip_pitch": -0.2494,
+        "left_knee": 0.3951,
+        "left_ankle": 0.6445,
+        "head_pitch": 0.5491,
+        "right_hip_pitch": 0.2494,
+        "right_knee": -0.3951,
+        "right_ankle": -0.6445
+      }
+    },
+    {
+      "t": 0.25,
+      "pose": {
+        "left_hip_roll": -0.0073,
+        "head_roll": 0.25,
+        "right_hip_roll": 0.1673
+      }
+    },
+    {
+      "t": 0.375,
+      "pose": {
+        "left_hip_pitch": -0.2494,
+        "left_knee": 0.3951,
+        "left_ankle": 0.6445,
+        "head_pitch": 0.5491,
+        "right_hip_pitch": 0.2494,
+        "right_knee": -0.3951,
+        "right_ankle": -0.6445
+      }
+    },
+    {
+      "t": 0.5,
+      "pose": {}
+    },
+    {
+      "t": 0.625,
+      "pose": {
+        "left_hip_pitch": -0.2494,
+        "left_knee": 0.3951,
+        "left_ankle": 0.6445,
+        "head_pitch": 0.5491,
+        "right_hip_pitch": 0.2494,
+        "right_knee": -0.3951,
+        "right_ankle": -0.6445
+      }
+    },
+    {
+      "t": 0.75,
+      "pose": {
+        "left_hip_roll": -0.1673,
+        "head_roll": -0.25,
+        "right_hip_roll": 0.0073
+      }
+    },
+    {
+      "t": 0.875,
+      "pose": {
+        "left_hip_pitch": -0.2494,
+        "left_knee": 0.3951,
+        "left_ankle": 0.6445,
+        "head_pitch": 0.5491,
+        "right_hip_pitch": 0.2494,
+        "right_knee": -0.3951,
+        "right_ankle": -0.6445
+      }
+    }
+  ]
+}

@@ -1,6 +1,7 @@
 """The 61-value observation Pollen's MicroDuck policies take (microduck_rl@0daab16 infer_policy.py:656-682,
 duck-control obs.rs): gyro(3), projected gravity(3), joint positions minus the default pose(14), joint
-velocities(14), the last raw action(14), command(13) = twist(3) + head pose(4) + body pose(6). No scaling,
+velocities(14), the last raw action(14), command(13) = twist(3) + head pose(4) + body pose(6), where the twist slot holds either
+a velocity twist or, for a dance, the phase clock (cos 2*pi*phi, sin 2*pi*phi, 0). No scaling,
 noise, history or clock. Pure numpy: shared by the Viam service and the golden test."""
 
 from __future__ import annotations
@@ -26,12 +27,18 @@ class Command:
         return cmd
 
 
-def build_obs(*, gyro, gravity, q, dq, default_pose, last_action, command: Command) -> np.ndarray:
+def build_obs(*, gyro, gravity, q, dq, default_pose, last_action, command) -> np.ndarray:
     return np.concatenate([
         np.asarray(gyro, np.float32),
         np.asarray(gravity, np.float32),
         np.asarray(q, np.float32) - np.asarray(default_pose, np.float32),
         np.asarray(dq, np.float32),
         np.asarray(last_action, np.float32),
-        command.vector(),
+        np.asarray(command, np.float32),
     ]).astype(np.float32)
+
+
+def phase_command(phi: float) -> np.ndarray:
+    cmd = np.zeros(13, np.float32)
+    cmd[0:2] = (np.cos(2 * np.pi * phi), np.sin(2 * np.pi * phi))
+    return cmd

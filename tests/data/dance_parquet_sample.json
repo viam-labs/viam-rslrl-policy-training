@@ -1,0 +1,17 @@
+[
+  {
+    "component_name": "left-leg",
+    "method_name": "JointPositions",
+    "payload": "{\"positions\":{\"values\":[0.00031619848269972433,-3.309392145112123,-17.815238850772808,15.875708950553717,33.68936647160636]}}"
+  },
+  {
+    "component_name": "head",
+    "method_name": "JointPositions",
+    "payload": "{\"positions\":{\"values\":[19.999183306976136,28.08128877964639,0.00017964542870987539,5.284527353164859]}}"
+  },
+  {
+    "component_name": "right-leg",
+    "method_name": "JointPositions",
+    "payload": "{\"positions\":{\"values\":[-0.00015712944520058098,6.6940744238119585,17.81559196434412,-15.875508898430217,-33.68941333459695]}}"
+  }
+]

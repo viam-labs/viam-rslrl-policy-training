@@ -1,4 +1,5 @@
 import asyncio
+import math
 
 import numpy as np
 import pytest
@@ -159,3 +160,29 @@ def test_ramp_writes_before_policy_when_away_from_default():
     lp, _ = loop(io, ticks=3)
     w = np.array(io.writes)
     assert len(w) == 5 + 3 and w[4] == pytest.approx(DEFAULT) and w[0] == pytest.approx(np.array(DEFAULT) / 5)
+
+
+PHASE_CFG = {**CFG, "command": {"mode": "phase", "period_s": 0.1}}  # 5 ticks per cycle
+
+
+def test_phase_loop_advances_then_holds():
+    io = FakeIO()
+    loop = PolicyLoop(io, lambda obs: np.zeros(14), PHASE_CFG, Limits(), cycles=2)
+    seen = []
+    orig = loop._infer
+
+    async def spy(obs):
+        seen.append(obs[48:51].copy())
+        return await orig(obs)
+
+    loop._infer = spy
+    asyncio.run(loop.run(max_ticks=14))
+    phases = [round((math.atan2(s[1], s[0]) / (2 * math.pi)) % 1.0, 2) for s in seen]
+    assert phases[:5] == [0.0, 0.2, 0.4, 0.6, 0.8]  # skipped slots would show as gaps, not drift
+    assert all(p == 0.0 for p in phases[10:]) and loop.status()["holding"] and loop.status()["cycles_done"] == 2 and loop.status()["period_s"] == 0.1
+
+
+def test_phase_loop_rejects_set_command():
+    loop = PolicyLoop(FakeIO(), lambda obs: np.zeros(14), PHASE_CFG, Limits())
+    with pytest.raises(ValueError):
+        loop.set_command(Command(0.1))

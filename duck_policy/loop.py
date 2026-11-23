@@ -16,7 +16,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .io import DuckIO, Snapshot
-from .obs import Command, build_obs
+from .obs import Command, build_obs, phase_command
 
 
 @dataclass(frozen=True)
@@ -32,7 +32,7 @@ class Limits:
     stale_ticks: int = 3
 
 
-RAMP_THRESHOLD = 0.05  # rad: a start pose farther than this from default is ramped to it
+RAMP_THRESHOLD = 0.15  # rad: a start pose farther than this is ramped to default; nearer, the policy starts from it (the walker stands 0.063 off)
 
 
 class Stop(Exception):
@@ -43,14 +43,18 @@ class Stop(Exception):
 
 class PolicyLoop:
     def __init__(self, io: DuckIO, infer: Callable[[np.ndarray], np.ndarray | Awaitable[np.ndarray]],
-                 cfg: dict, limits: Limits) -> None:
+                 cfg: dict, limits: Limits, cycles: int = 0) -> None:
         self.io, self.infer, self.limits = io, infer, limits
         self.default = np.asarray(cfg["default_pose"], float)
         self.scale = float(cfg["action_scale"])
         lim = np.asarray(cfg["joint_limits"], float)
         self.lo, self.hi = lim[:, 0], lim[:, 1]
         self.dt = 1.0 / float(cfg.get("control_hz", 50))
-        self.twist_lo, self.twist_hi = cfg["command"]["twist_min"], cfg["command"]["twist_max"]
+        cmd = cfg["command"]
+        self.period = float(cmd["period_s"]) if cmd.get("mode") == "phase" else None
+        if self.period is None:
+            self.twist_lo, self.twist_hi = cmd["twist_min"], cmd["twist_max"]
+        self.cycles, self.cycles_done, self.phase, self.holding = int(cycles), 0, 0.0, False
         safety = cfg.get("safety") or {}
         self.action_bound = float(safety.get("action_bound", 5.0))
         self.max_step = float(safety.get("max_step_rad", 0.5))
@@ -60,6 +64,8 @@ class PolicyLoop:
         self.tick_ms: deque[float] = deque(maxlen=3000)
 
     def set_command(self, command: Command) -> None:
+        if self.period is not None:
+            raise ValueError("set_command isn't available in phase mode")
         clipped = command.clipped(self.twist_lo, self.twist_hi)
         self.command_clipped, self.command = clipped != command, clipped
 
@@ -147,8 +153,17 @@ class PolicyLoop:
             fall = fall + 1 if snap.gravity[2] > lim.fall_gravity_z else 0
             if fall >= lim.fall_ticks:
                 raise Stop("fall", limp=True)
+            if self.period is None:
+                command = self.command.vector()
+            else:
+                s = (slot - 1) * self.dt  # this tick's scheduled time since t0: skipped slots advance it like real time
+                done = int(s // self.period)
+                self.holding = bool(self.cycles) and done >= self.cycles
+                self.cycles_done = min(done, self.cycles) if self.cycles else done
+                self.phase = 0.0 if self.holding else (s / self.period) % 1.0
+                command = phase_command(self.phase)
             obs = build_obs(gyro=snap.gyro, gravity=snap.gravity, q=snap.q, dq=snap.dq,
-                            default_pose=self.default, last_action=last_action, command=self.command)
+                            default_pose=self.default, last_action=last_action, command=command)
             self.last_obs = obs
             action = await self._infer(obs)
             if not np.all(np.isfinite(action)) or np.abs(action).max() > self.action_bound:
@@ -175,7 +190,8 @@ class PolicyLoop:
         ms = sorted(self.tick_ms)
         pct = (lambda p: round(ms[min(len(ms) - 1, int(p * len(ms)))], 2)) if ms else (lambda p: None)
         run_s = None if self.t0 is None else round((self.t_end or time.monotonic()) - self.t0, 3)
-        return {"ticks": self.ticks, "late": self.late, "resets": self.resets, "run_s": run_s, "warmup_ms": self.warmup_ms,  # run_s: since the loop's t0 (after any ramp)
+        phase = {"phase": self.phase, "period_s": self.period, "cycles_done": self.cycles_done, "holding": self.holding} if self.period else {}
+        return {**phase, "ticks": self.ticks, "late": self.late, "resets": self.resets, "run_s": run_s, "warmup_ms": self.warmup_ms,  # run_s: since the loop's t0 (after any ramp)
                 "tick_ms_p50": pct(0.5), "tick_ms_p99": pct(0.99),
                 "reason": self.reason, "command": [self.command.vx, self.command.vy, self.command.wz],
                 "command_clipped": self.command_clipped}

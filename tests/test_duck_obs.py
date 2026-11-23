@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from duck_policy.obs import Command, build_obs
+from duck_policy.obs import Command, build_obs, phase_command
 
 DEFAULT = np.array([0, -0.0873, -0.4579, -0.0049, 0.4530, 0.3491, 0.3491, 0, 0, 0, 0.0873, 0.4579, 0.0049, -0.4530])
 
@@ -13,7 +13,7 @@ def test_layout_matches_infer_policy():
     q, dq = DEFAULT + 0.01 * np.arange(14), -0.02 * np.arange(14)
     last = 0.5 * np.ones(14)
     obs = build_obs(gyro=[0.1, 0.2, 0.3], gravity=[0.0, 0.05, -0.99], q=q, dq=dq,
-                    default_pose=DEFAULT, last_action=last, command=Command(0.2, -0.1, 0.5))
+                    default_pose=DEFAULT, last_action=last, command=Command(0.2, -0.1, 0.5).vector())
     assert obs.dtype == np.float32 and obs.shape == (61,)
     assert obs[0:3] == pytest.approx([0.1, 0.2, 0.3])
     assert obs[3:6] == pytest.approx([0.0, 0.05, -0.99])
@@ -39,5 +39,9 @@ def test_build_obs_reproduces_infer_policy_exactly():
     for tick in g["ticks"]:
         vx, vy, wz = tick["command"]
         obs = build_obs(gyro=tick["gyro"], gravity=tick["gravity"], q=tick["q"], dq=tick["dq"],
-                        default_pose=g["default_pose"], last_action=tick["last_action"], command=Command(vx, vy, wz))
+                        default_pose=g["default_pose"], last_action=tick["last_action"], command=Command(vx, vy, wz).vector())
         assert obs == pytest.approx(np.array(tick["obs"], np.float32), abs=1e-6)
+
+
+def test_phase_command():
+    assert np.allclose(phase_command(0.25)[:3], [0, 1, 0], atol=1e-7) and not phase_command(0.25)[3:].any()

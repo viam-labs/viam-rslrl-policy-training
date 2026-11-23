@@ -2,10 +2,10 @@
 and does io report the policy's joint order? Runs mujoco-sim's handles in-process, no viam-server.
 Run with mujoco-sim's own environment:
 
-    uv run --project /Users/nick.hehr/src/viam-mujoco-sim-floating python scripts/duck_stand_check.py dist/duck-sim [mujoco-sim src dir]
+    uv run --project /Users/nick.hehr/src/viam-mujoco-sim python scripts/duck_stand_check.py dist/duck-sim [mujoco-sim src dir]
 
-The source dir defaults to $MUJOCO_SIM_SRC, else the floating-base-bam worktree (viam-mujoco-sim
-PR #7, released in 0.21.0); any checkout at 0.21.0 or later works.
+The source dir defaults to $MUJOCO_SIM_SRC, else ~/src/viam-mujoco-sim/src: any viam-mujoco-sim checkout at
+0.21.0 or later (the floating base, BAM and io).
 
 With no policy the duck tips forward in about a second, and with the ground-contact model's trunk
 and head collision it then falls onto the floor: the check only asserts the first 0.3 s and prints
@@ -21,7 +21,7 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
-DEFAULT_SRC = "/Users/nick.hehr/src/viam-mujoco-sim-floating/src"
+DEFAULT_SRC = "/Users/nick.hehr/src/viam-mujoco-sim/src"
 
 # The policies' joint order (microduck_rl README "Joint layout"): left leg, neck/head, right leg
 POLICY_ORDER = [
