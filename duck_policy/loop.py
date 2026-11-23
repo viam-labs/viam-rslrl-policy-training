@@ -16,7 +16,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .io import DuckIO, Snapshot
-from .obs import Command, build_obs, phase_command
+from .obs import Command, build_obs, obs_layout, phase_command
 
 
 @dataclass(frozen=True)
@@ -50,6 +50,8 @@ class PolicyLoop:
         lim = np.asarray(cfg["joint_limits"], float)
         self.lo, self.hi = lim[:, 0], lim[:, 1]
         self.dt = 1.0 / float(cfg.get("control_hz", 50))
+        self.layout = obs_layout(cfg)
+        self.obs_len, self.cmd_size = sum(n for _, n in self.layout), dict(self.layout).get("command", 3)
         cmd = cfg["command"]
         self.period = float(cmd["period_s"]) if cmd.get("mode") == "phase" else None
         if self.period is None:
@@ -113,7 +115,7 @@ class PolicyLoop:
         lim = self.limits
         # Warm-up: the first onnx-cpu infer over gRPC is slow. Not counted, not under call_timeout_s.
         warm = time.monotonic()
-        out = self.infer(np.zeros(61, np.float32))
+        out = self.infer(np.zeros(self.obs_len, np.float32))
         if asyncio.iscoroutine(out) or isinstance(out, Awaitable):
             try:
                 await asyncio.wait_for(out, lim.warmup_timeout_s)
@@ -154,16 +156,17 @@ class PolicyLoop:
             if fall >= lim.fall_ticks:
                 raise Stop("fall", limp=True)
             if self.period is None:
-                command = self.command.vector()
+                command = self.command.vector(self.cmd_size)
             else:
                 s = (slot - 1) * self.dt  # this tick's scheduled time since t0: skipped slots advance it like real time
                 done = int(s // self.period)
                 self.holding = bool(self.cycles) and done >= self.cycles
                 self.cycles_done = min(done, self.cycles) if self.cycles else done
                 self.phase = 0.0 if self.holding else (s / self.period) % 1.0
-                command = phase_command(self.phase)
+                command = phase_command(self.phase, self.cmd_size)
             obs = build_obs(gyro=snap.gyro, gravity=snap.gravity, q=snap.q, dq=snap.dq,
-                            default_pose=self.default, last_action=last_action, command=command)
+                            default_pose=self.default, last_action=last_action, command=command,
+                            layout=self.layout)
             self.last_obs = obs
             action = await self._infer(obs)
             if not np.all(np.isfinite(action)) or np.abs(action).max() > self.action_bound:

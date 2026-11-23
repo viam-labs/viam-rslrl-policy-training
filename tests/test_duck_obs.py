@@ -45,3 +45,42 @@ def test_build_obs_reproduces_infer_policy_exactly():
 
 def test_phase_command():
     assert np.allclose(phase_command(0.25)[:3], [0, 1, 0], atol=1e-7) and not phase_command(0.25)[3:].any()
+
+
+from duck_policy.obs import DEFAULT_LAYOUT, obs_layout  # noqa: E402
+
+
+def layout_spec(pairs, dim=None):
+    return {"terms": [{"name": n, "dim": d} for n, d in pairs], **({"dim": dim} if dim is not None else {})}
+
+
+def test_obs_layout_defaults_for_old_packages():
+    # the 0.1.0 packages carry a descriptive string here, and none at all is the same
+    assert obs_layout({"observation": "gyro(3) gravity(3) ..."}) == DEFAULT_LAYOUT
+    assert obs_layout({}) == DEFAULT_LAYOUT
+
+
+def test_obs_layout_from_config_drives_build_obs():
+    layout = obs_layout({"observation": layout_spec([("q_rel", 14), ("gyro", 3), ("command", 4)], dim=21), "model": {"obs_len": 21}})
+    obs = build_obs(layout=layout, gyro=[0.1, 0.2, 0.3], gravity=[0, 0, -1], q=DEFAULT + 0.5, dq=np.zeros(14),
+                    default_pose=DEFAULT, last_action=np.zeros(14), command=Command(0.2).vector(4))
+    assert obs.shape == (21,) and obs[:14] == pytest.approx(0.5) and obs[14:17] == pytest.approx([0.1, 0.2, 0.3])
+    assert obs[17:] == pytest.approx([0.2, 0, 0, 0])
+
+
+@pytest.mark.parametrize("obs, model", [
+    (layout_spec([("torque", 3)]), {}),                       # unknown term
+    (layout_spec([("gyro", 0)]), {}),                         # empty term
+    (layout_spec([("command", 2)]), {}),                      # no room for a twist
+    (layout_spec([("gyro", 3), ("dq", 14)]), {"obs_len": 61}),  # doesn't add up to the model's input
+    (layout_spec([("gyro", 3)], dim=6), {}),                  # doesn't add up to its own dim
+])
+def test_obs_layout_rejects_bad_configs(obs, model):
+    with pytest.raises(ValueError):
+        obs_layout({"observation": obs, "model": model})
+
+
+def test_build_obs_rejects_a_term_of_the_wrong_size():
+    with pytest.raises(ValueError, match="dq"):
+        build_obs(layout=[("dq", 12)], gyro=[0] * 3, gravity=[0] * 3, q=DEFAULT, dq=np.zeros(14),
+                  default_pose=DEFAULT, last_action=np.zeros(14), command=np.zeros(13))

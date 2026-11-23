@@ -9,6 +9,9 @@ import json
 from pathlib import Path
 
 
+OBS_TERMS = (("gyro", 3), ("gravity", 3), ("q_rel", 14), ("dq", 14), ("last_action", 14), ("command", 13))
+
+
 def build_config(*, joints, default_pose, action_scale, joint_limits, command, control_hz, source) -> dict:
     return {
         "schema": 1,
@@ -21,7 +24,8 @@ def build_config(*, joints, default_pose, action_scale, joint_limits, command, c
         "control_hz": int(control_hz),
         "command": {k: (list(map(float, v)) if isinstance(v, (list, tuple)) else v) for k, v in command.items()},
         "safety": {},
-        "observation": "gyro(3) gravity(3) q-default_pose(14) dq(14) last_action(14) command(13): microduck_rl@0daab16 infer_policy.py:656-682",
+        # what duck-policy concatenates, in order (microduck_rl@0daab16 infer_policy.py:656-682); q_rel = q - default_pose
+        "observation": {"dim": 61, "terms": [{"name": n, "dim": d} for n, d in OBS_TERMS]},
     }
 
 

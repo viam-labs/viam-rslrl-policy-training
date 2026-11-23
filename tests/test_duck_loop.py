@@ -186,3 +186,15 @@ def test_phase_loop_rejects_set_command():
     loop = PolicyLoop(FakeIO(), lambda obs: np.zeros(14), PHASE_CFG, Limits())
     with pytest.raises(ValueError):
         loop.set_command(Command(0.1))
+
+
+def test_loop_builds_the_configured_layout():
+    seen = []
+
+    def infer(obs):
+        seen.append(obs.shape)
+        return np.zeros(14, np.float32)
+
+    cfg = {**CFG, "observation": {"dim": 20, "terms": [{"name": "gravity", "dim": 3}, {"name": "q_rel", "dim": 14}, {"name": "command", "dim": 3}]}, "model": {"obs_len": 20}}
+    asyncio.run(PolicyLoop(FakeIO(), infer, cfg, Limits()).run(max_ticks=2))
+    assert seen and all(s == (20,) for s in seen)  # warm-up included

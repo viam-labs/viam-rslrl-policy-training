@@ -25,7 +25,7 @@ from viam.utils import struct_to_dict
 
 from .io import SimIO
 from .loop import RAMP_THRESHOLD, Limits, PolicyLoop
-from .obs import Command
+from .obs import Command, obs_layout
 
 UPRIGHT_GRAVITY_Z = -0.9  # ~25 degrees of tilt
 LIMIT_KEYS = ("fall_gravity_z", "call_timeout_s", "ramp_s")
@@ -63,6 +63,7 @@ class DuckPolicy(Generic, EasyResource):
         self.limits = Limits(**{k: float(attrs[k]) for k in LIMIT_KEYS if k in attrs})
         self.input_name = self.cfg["model"]["input"]
         self.output_name = self.cfg["model"]["output"]
+        obs_layout(self.cfg)  # a bad observation layout fails the configure, not the first start
         self.task, self.loop, self.command = None, None, Command()
         self._start_lock = getattr(self, "_start_lock", None) or asyncio.Lock()  # kept across reconfigures
 

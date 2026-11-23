@@ -69,3 +69,12 @@ def test_duck_sdist_shim():
         shim = t.extractfile("microduck_train-0.2.0/model/training.py").read().decode()
     assert "from duck_train.train import main" in shim
     assert not any("rl_insert" in n for n in names)
+
+
+def test_package_observation_is_what_duck_policy_builds():
+    from duck_policy.obs import DEFAULT_LAYOUT, obs_layout
+    from duck_train.package import build_config
+
+    cfg = build_config(joints=["j"] * 14, default_pose=[0.0] * 14, action_scale=1.0, joint_limits=[[-1, 1]] * 14,
+                       command={"mode": "phase", "period_s": 6.0}, control_hz=50, source={})
+    assert obs_layout(cfg) == DEFAULT_LAYOUT
